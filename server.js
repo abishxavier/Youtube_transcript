@@ -819,10 +819,10 @@ Return ONLY a valid JSON object with this exact structure:
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
   console.log(`🚀 Multilingual YouTube Transcriber & Player Server`);
-  console.log(`🌐 Local Web App: http://localhost:${PORT}`);
+  console.log(`🌐 Host Interface: 0.0.0.0:${PORT}`);
   console.log(`📱 Ready for Android / Google Play Store packaging`);
   console.log(`====================================================`);
 });
