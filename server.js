@@ -159,7 +159,7 @@ async function fetchTimedText(baseUrl) {
   try {
     const res = await fetch(baseUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)'
+        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)'
       },
       signal: AbortSignal.timeout(8000),
     });
