@@ -1,0 +1,15 @@
+{
+  "appId": "com.transcribex.app",
+  "appName": "TranscribeX Pro - YouTube Multilingual Transcriber",
+  "webDir": "public",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}

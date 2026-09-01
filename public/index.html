@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>YouTube Multilingual Transcriber & Subtitle Player</title>
+  <meta name="description" content="Paste any YouTube video link to extract, synchronize, translate into 100+ global languages, and download transcripts in SRT, VTT, TXT, JSON, or PDF." />
+  
+  <!-- Mobile & Android Theme Colors -->
+  <meta name="theme-color" content="#0a0d14" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="manifest.json" />
+
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>" />
+</head>
+<body>
+
+  <!-- Navigation Bar -->
+  <header class="navbar">
+    <div class="container" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <a href="/" class="nav-brand">
+        <div class="brand-icon">🌐</div>
+        <div>
+          <div class="brand-name">TranscribeX Pro</div>
+        </div>
+        <span class="brand-tag">Play Store Ready</span>
+      </a>
+
+      <div class="nav-actions">
+        <span class="badge badge-primary">⚡ 100+ World Languages</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="container">
+    
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <h1 class="hero-title">
+        YouTube Video <span class="gradient-text">Multilingual Transcriber</span> & Player
+      </h1>
+      <p class="hero-subtitle">
+        Paste any YouTube link to generate synchronized video subtitles, translate across 100+ world languages in real-time, and download in SRT, VTT, TXT, JSON, or PDF.
+      </p>
+
+      <!-- URL Input Box -->
+      <div class="input-card">
+        <div class="input-row">
+          <input 
+            type="text" 
+            id="youtube-url-input" 
+            class="url-input" 
+            placeholder="Paste YouTube link here (e.g. https://www.youtube.com/watch?v=dQw4w9WgXcQ)..." 
+            autocomplete="off" 
+          />
+          <button id="paste-btn" class="btn btn-secondary btn-sm" title="Paste from clipboard">
+            📋 Paste
+          </button>
+          <button id="fetch-btn" class="btn btn-primary">
+            ✨ Transcribe
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Demo Pills -->
+      <div class="demo-pill-container">
+        <span class="demo-label">Try sample videos:</span>
+        <button class="demo-pill" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">
+          🎥 First YouTube Video (Me at the zoo)
+        </button>
+        <button class="demo-pill" data-url="https://www.youtube.com/watch?v=k2P_amTcewE">
+          💡 Steve Jobs 2005 Stanford Speech
+        </button>
+        <button class="demo-pill" data-url="https://www.youtube.com/watch?v=86CQq33Ztag">
+          🚀 What is AI?
+        </button>
+      </div>
+
+      <!-- Status Alert -->
+      <div id="status-alert" class="alert"></div>
+    </section>
+
+    <!-- Welcome Feature Showcase (Visible before URL is processed) -->
+    <section id="welcome-section" class="welcome-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3 class="feature-title">Real-Time Sync Player</h3>
+        <p class="feature-desc">Interactive video player with live subtitle tracking. Click any transcript timestamp to jump the video directly to that exact second.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌍</div>
+        <h3 class="feature-title">100+ Global Languages</h3>
+        <p class="feature-desc">Translate full video transcripts into all world languages (English, Hindi, Spanish, Tamil, French, Japanese, Arabic, German, Russian, and more).</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📥</div>
+        <h3 class="feature-title">Multi-Format Downloads</h3>
+        <p class="feature-desc">Download complete subtitles as <code>.SRT</code>, <code>.VTT</code>, <code>.TXT</code> (with or without timecodes), <code>.JSON</code>, or printable PDF documents.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🤖</div>
+        <h3 class="feature-title">AI Summary & Dual Subtitles</h3>
+        <p class="feature-desc">Generate instant key takeaway summaries and compare original vs translated subtitles side-by-side for language learning.</p>
+      </div>
+    </section>
+
+    <!-- Active Workspace (Activated when Video & Transcript is loaded) -->
+    <div id="app-content" class="workspace-grid">
+      
+      <!-- Left Column: Video Player & Info -->
+      <div class="player-column">
+        <div class="player-card">
+          <div class="video-player-wrapper">
+            <div id="youtube-player-iframe"></div>
+          </div>
+
+          <div class="video-meta-box">
+            <h2 id="video-title" class="video-title">YouTube Video Title</h2>
+            <div id="video-author" class="video-author">Creator Channel</div>
+            <div class="video-stats-bar">
+              <span id="active-time-display" class="badge">00:00 / 00:00</span>
+              <span id="segment-count-badge" class="badge badge-primary">0 lines</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Interactive Transcript Hub -->
+      <div class="transcript-column">
+        
+        <!-- Header Toolbar -->
+        <div class="transcript-header">
+          <div class="toolbar-top">
+            <button id="lang-select-btn" class="lang-picker-btn">
+              <span id="selected-lang-badge">🇺🇸 English</span>
+              <span>▾</span>
+            </button>
+
+            <div class="toolbar-actions">
+              <button id="summary-btn" class="btn btn-secondary btn-sm" title="Generate AI Summary">
+                🤖 AI Summary
+              </button>
+              <button id="export-btn" class="btn btn-primary btn-sm" title="Download Subtitles">
+                📥 Download
+              </button>
+            </div>
+          </div>
+
+          <div class="toolbar-bottom">
+            <div class="search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="search-transcript-input" class="search-input" placeholder="Search in transcript..." />
+            </div>
+
+            <div class="toggle-group">
+              <label class="switch-label" title="Show original and translated text stacked">
+                <input type="checkbox" id="dual-sub-toggle" />
+                <span>Dual Subtitles</span>
+              </label>
+
+              <label class="switch-label" title="Automatically keep active line in view">
+                <input type="checkbox" id="auto-scroll-toggle" checked />
+                <span>Auto-Scroll</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scrollable Transcript Feed -->
+        <div id="transcript-list" class="transcript-list">
+          <!-- Dynamic Transcript Rows Injected Here -->
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- Language Selection Modal (100+ Languages) -->
+  <div id="lang-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Select Translation Language</h3>
+        <button id="close-lang-modal" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="lang-modal-search">
+          <input type="text" id="lang-search-input" class="search-input" placeholder="Search 100+ languages (e.g. Hindi, Spanish, Japanese, Tamil, German)..." />
+        </div>
+        <div id="lang-grid" class="lang-selection-container">
+          <!-- Categorized Languages Injected Here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Download / Export Modal -->
+  <div id="export-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Download Transcripts & Subtitles</h3>
+        <button id="close-export-modal" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="export-grid">
+          <div id="download-srt-btn" class="export-card">
+            <div class="export-card-icon">🎬</div>
+            <div class="export-card-title">.SRT Subtitles</div>
+            <div class="export-card-desc">Standard SubRip subtitle file for VLC, CapCut, Premiere & video editors.</div>
+          </div>
+
+          <div id="download-vtt-btn" class="export-card">
+            <div class="export-card-icon">🌐</div>
+            <div class="export-card-title">.VTT WebVTT</div>
+            <div class="export-card-desc">Modern web standard subtitle format with high accuracy timecodes.</div>
+          </div>
+
+          <div id="download-txt-btn" class="export-card">
+            <div class="export-card-icon">📄</div>
+            <div class="export-card-title">.TXT Text File</div>
+            <div class="export-card-desc">Formatted clean script document with readable timestamp markers.</div>
+          </div>
+
+          <div id="download-json-btn" class="export-card">
+            <div class="export-card-icon">💻</div>
+            <div class="export-card-title">.JSON Data</div>
+            <div class="export-card-desc">Structured developer format with duration, start time, and segment IDs.</div>
+          </div>
+
+          <div id="print-pdf-btn" class="export-card">
+            <div class="export-card-icon">🖨️</div>
+            <div class="export-card-title">Print / PDF</div>
+            <div class="export-card-desc">Clean printable view ready to save as PDF notes or study material.</div>
+          </div>
+
+          <div id="copy-clipboard-btn" class="export-card">
+            <div class="export-card-icon">📋</div>
+            <div class="export-card-title">Copy to Clipboard</div>
+            <div class="export-card-desc">Copy entire transcript text instantly to paste anywhere.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Summary Modal -->
+  <div id="summary-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">🤖 AI Video Summary & Highlights</h3>
+        <button id="close-summary-modal" class="close-btn">&times;</button>
+      </div>
+      <div id="summary-content" class="modal-body">
+        <!-- Summary Injected Here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Spinner Overlay -->
+  <div id="loading-spinner" class="loading-overlay">
+    <div class="spinner"></div>
+    <div class="loading-text">Processing YouTube video captions...</div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toast" class="toast"></div>
+
+  <!-- Scripts -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

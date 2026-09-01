@@ -1,0 +1,18 @@
+{
+  "name": "TranscribeX Pro - YouTube Multilingual Transcriber",
+  "short_name": "TranscribeX",
+  "description": "Multilingual YouTube Video Transcriber, Synchronized Subtitle Player & Exporter",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0d14",
+  "theme_color": "#0a0d14",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='128' fill='%230a0d14'/><circle cx='256' cy='256' r='180' fill='url(%23g)'/><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%236366f1'/><stop offset='50%25' stop-color='%23a855f7'/><stop offset='100%25' stop-color='%23ec4899'/></linearGradient></defs><text x='256' y='320' font-size='200' text-anchor='middle' fill='%23ffffff'>🌐</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

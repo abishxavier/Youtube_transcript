@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TranscribeX Pro - YouTube Multilingual Transcriber</string>
+    <string name="title_activity_main">TranscribeX Pro - YouTube Multilingual Transcriber</string>
+    <string name="package_name">com.transcribex.app</string>
+    <string name="custom_url_scheme">com.transcribex.app</string>
+</resources>

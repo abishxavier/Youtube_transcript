@@ -1,0 +1,33 @@
+{
+  "name": "youtube-multilingual-transcriber",
+  "version": "1.0.0",
+  "description": "Multilingual YouTube Video Transcriber, Synchronized Subtitle Player & Exporter",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "build:android": "npx cap copy && npx cap sync",
+    "open:android": "npx cap open android"
+  },
+  "keywords": [
+    "youtube",
+    "transcription",
+    "multilingual",
+    "subtitles",
+    "srt",
+    "vtt",
+    "video-player",
+    "translation"
+  ],
+  "author": "Antigravity Dev",
+  "license": "MIT",
+  "dependencies": {
+    "@capacitor/android": "^8.5.1",
+    "@capacitor/cli": "^8.5.1",
+    "@capacitor/core": "^8.5.1",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "youtube-transcript": "^1.2.1"
+  }
+}
