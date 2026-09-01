@@ -516,59 +516,98 @@ app.get('/api/debug', async (req, res) => {
   const { v } = req.query;
   const videoId = extractVideoId(v) || 'c8EZrrTEfmk';
 
-  const diagnostics = {
-    videoId,
-    timestamp: new Date().toISOString(),
-  };
+  const testClients = [
+    {
+      name: 'ANDROID',
+      userAgent: 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+      context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
+    },
+    {
+      name: 'ANDROID_VR',
+      userAgent: 'com.google.android.apps.youtube.vr/1.56.21 (Linux; U; Android 12)',
+      context: { client: { clientName: 'ANDROID_VR', clientVersion: '1.56.21', deviceMake: 'Oculus', deviceModel: 'Quest 2' } },
+    },
+    {
+      name: 'IOS',
+      userAgent: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)',
+      context: { client: { clientName: 'IOS', clientVersion: '19.45.4', deviceMake: 'Apple', deviceModel: 'iPhone16,2' } },
+    },
+    {
+      name: 'WEB_EMBEDDED',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+      context: { client: { clientName: 'WEB_EMBEDDED_PLAYER', clientVersion: '1.20240301.01.00' }, thirdParty: { embedUrl: `https://www.youtube.com/embed/${videoId}` } },
+    },
+    {
+      name: 'TV_HTML5',
+      userAgent: 'Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/76.0.3809.146 TV Safari/537.36',
+      context: { client: { clientName: 'TVHTML5', clientVersion: '7.20240301.08.00' } },
+    },
+  ];
 
-  // 1. Test InnerTube ANDROID
+  const results = [];
+  for (const c of testClients) {
+    try {
+      const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': c.userAgent,
+        },
+        body: JSON.stringify({
+          context: c.context,
+          videoId,
+          contentCheckOk: true,
+          racyCheckOk: true,
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      const data = await resp.json();
+      const status = data?.playabilityStatus?.status;
+      const reason = data?.playabilityStatus?.reason;
+      const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+      results.push({
+        client: c.name,
+        httpStatus: resp.status,
+        status,
+        reason,
+        tracksCount: tracks ? tracks.length : 0,
+        track0Lang: tracks?.[0]?.languageCode,
+      });
+    } catch (e) {
+      results.push({ client: c.name, error: e.message });
+    }
+  }
+
+  // Also test embed page scraping with consent cookies
   try {
-    const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-      method: 'POST',
+    const watchResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AwGgJlbiACGgYIgLCtpgY; PREF=tz=UTC&hl=en;',
       },
-      body: JSON.stringify({
-        context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
-        videoId,
-      }),
       signal: AbortSignal.timeout(6000),
     });
-
-    diagnostics.innerTubeStatus = resp.status;
-    const data = await resp.json();
-    diagnostics.playability = data?.playabilityStatus;
-    const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-    diagnostics.innerTubeTracksCount = tracks ? tracks.length : 0;
-    if (tracks && tracks.length > 0) {
-      diagnostics.firstTrack = {
-        lang: tracks[0].languageCode,
-        baseUrl: tracks[0].baseUrl.slice(0, 100),
-      };
-      // Try timedtext fetch
-      const ttResp = await fetch(tracks[0].baseUrl, {
-        headers: { 'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)' },
-        signal: AbortSignal.timeout(6000),
+    const html = await watchResp.text();
+    const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/s);
+    if (jsonMatch) {
+      const json = JSON.parse(jsonMatch[1]);
+      const tracks = json.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      results.push({
+        client: 'WATCH_PAGE_SCRAPE',
+        tracksCount: tracks ? tracks.length : 0,
+        track0Lang: tracks?.[0]?.languageCode,
       });
-      diagnostics.timedTextStatus = ttResp.status;
-      const xml = await ttResp.text();
-      diagnostics.timedTextLength = xml.length;
-      diagnostics.timedTextSample = xml.slice(0, 150);
+    } else {
+      results.push({ client: 'WATCH_PAGE_SCRAPE', status: 'no_json_match', htmlLen: html.length });
     }
-  } catch (err) {
-    diagnostics.innerTubeError = err.message;
+  } catch (e) {
+    results.push({ client: 'WATCH_PAGE_SCRAPE', error: e.message });
   }
 
-  // 2. Test YoutubeTranscript
-  try {
-    const raw = await YoutubeTranscript.fetchTranscript(videoId);
-    diagnostics.youtubeTranscriptCount = raw.length;
-  } catch (err) {
-    diagnostics.youtubeTranscriptError = err.message;
-  }
-
-  res.json(diagnostics);
+  res.json({ videoId, timestamp: new Date().toISOString(), results });
 });
 
 // 1. Video Info Endpoint
