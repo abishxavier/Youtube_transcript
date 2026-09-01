@@ -30,7 +30,10 @@
       </a>
 
       <div class="nav-actions">
-        <span class="badge badge-primary">⚡ 100+ World Languages</span>
+        <button id="settings-nav-btn" class="btn btn-secondary btn-sm" title="AI Translation & Language Settings">
+          ⚙️ Settings
+        </button>
+        <span class="badge badge-primary">⚡ 100+ Languages</span>
       </div>
     </div>
   </header>
@@ -135,10 +138,18 @@
         <!-- Header Toolbar -->
         <div class="transcript-header">
           <div class="toolbar-top">
-            <button id="lang-select-btn" class="lang-picker-btn">
-              <span id="selected-lang-badge">🇺🇸 English</span>
-              <span>▾</span>
-            </button>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <button id="lang-select-btn" class="lang-picker-btn">
+                <span id="selected-lang-badge">🎙️ Original Audio</span>
+                <span>▾</span>
+              </button>
+              <span id="detected-audio-badge" class="badge badge-accent" title="Detected spoken language in video">
+                🎙️ Audio: Detecting...
+              </span>
+              <span id="trans-mode-badge" class="badge badge-primary" style="display: none;">
+                ✨ Authentic AI
+              </span>
+            </div>
 
             <div class="toolbar-actions">
               <button id="summary-btn" class="btn btn-secondary btn-sm" title="Generate AI Summary">
@@ -157,12 +168,17 @@
             </div>
 
             <div class="toggle-group">
-              <label class="switch-label" title="Show original and translated text stacked">
+              <label class="switch-label" title="Show original audio language and translated subtitles side-by-side">
                 <input type="checkbox" id="dual-sub-toggle" />
                 <span>Dual Subtitles</span>
               </label>
 
-              <label class="switch-label" title="Automatically keep active line in view">
+              <label class="switch-label" title="View as clean continuous readable paragraphs">
+                <input type="checkbox" id="reading-mode-toggle" />
+                <span>📖 Paragraphs</span>
+              </label>
+
+              <label class="switch-label" title="Automatically keep active subtitle in view">
                 <input type="checkbox" id="auto-scroll-toggle" checked />
                 <span>Auto-Scroll</span>
               </label>
@@ -185,15 +201,81 @@
   <div id="lang-modal" class="modal-overlay">
     <div class="modal-card">
       <div class="modal-header">
-        <h3 class="modal-title">Select Translation Language</h3>
+        <h3 class="modal-title">Select Transcript Language</h3>
         <button id="close-lang-modal" class="close-btn">&times;</button>
       </div>
       <div class="modal-body">
         <div class="lang-modal-search">
-          <input type="text" id="lang-search-input" class="search-input" placeholder="Search 100+ languages (e.g. Hindi, Spanish, Japanese, Tamil, German)..." />
+          <input type="text" id="lang-search-input" class="search-input" placeholder="Search 100+ languages (e.g. Tamil, Hindi, English, Spanish, Telugu, Malayalam)..." />
         </div>
         <div id="lang-grid" class="lang-selection-container">
           <!-- Categorized Languages Injected Here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Settings & AI Modal -->
+  <div id="settings-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">⚙️ AI & Language Settings</h3>
+        <button id="close-settings-modal" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-form">
+          <div class="settings-group">
+            <label class="settings-label">
+              <span>🎯 Preferred Default Language</span>
+              <small style="color: var(--text-muted); display: block; font-size: 0.82rem; margin-top: 2px;">
+                When you paste any video, it will automatically translate into your preferred language with authentic grammar.
+              </small>
+            </label>
+            <select id="pref-lang-select" class="settings-select">
+              <option value="auto">🎙️ Original Audio Language (Verbatim Spoken Words)</option>
+              <option value="en">🇺🇸 English</option>
+              <option value="hi">🇮🇳 Hindi (हिन्दी)</option>
+              <option value="ta">🇮🇳 Tamil (தமிழ்)</option>
+              <option value="te">🇮🇳 Telugu (తెలుగు)</option>
+              <option value="ml">🇮🇳 Malayalam (മലയാളം)</option>
+              <option value="kn">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+              <option value="bn">🇧🇩 Bengali (বাংলা)</option>
+              <option value="mr">🇮🇳 Marathi (मराठी)</option>
+              <option value="gu">🇮🇳 Gujarati (ગુજરાતી)</option>
+              <option value="pa">🇮🇳 Punjabi (ਪੰਜਾਬੀ)</option>
+              <option value="es">🇪🇸 Spanish (Español)</option>
+              <option value="fr">🇫🇷 French (Français)</option>
+              <option value="de">🇩🇪 German (Deutsch)</option>
+              <option value="ja">🇯🇵 Japanese (日本語)</option>
+              <option value="ar">🇸🇦 Arabic (العربية)</option>
+              <option value="ru">🇷🇺 Russian (Русский)</option>
+              <option value="pt">🇧🇷 Portuguese (Português)</option>
+              <option value="ko">🇰🇷 Korean (한국어)</option>
+              <option value="it">🇮🇹 Italian (Italiano)</option>
+            </select>
+          </div>
+
+          <div class="settings-group" style="margin-top: 1.25rem;">
+            <label class="settings-label">
+              <span>✨ Google Gemini API Key (Optional - 100% Free)</span>
+              <small style="color: var(--text-muted); display: block; font-size: 0.82rem; margin-top: 2px;">
+                Provides 100% authentic human-grade AI translation with native colloquial fluency. Get a free key at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: var(--primary-glow); text-decoration: underline;">Google AI Studio</a>.
+              </small>
+            </label>
+            <input 
+              type="password" 
+              id="gemini-api-key-input" 
+              class="url-input" 
+              placeholder="Paste Gemini API key (AIzaSy...)" 
+              style="width: 100%; margin-top: 6px;"
+            />
+          </div>
+
+          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 1.5rem;">
+            <button id="save-settings-btn" class="btn btn-primary">
+              💾 Save Preferences
+            </button>
+          </div>
         </div>
       </div>
     </div>

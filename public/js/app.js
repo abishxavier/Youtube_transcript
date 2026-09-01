@@ -12,11 +12,14 @@ const state = {
   currentVideoId: null,
   videoInfo: null,
   transcript: [],
-  activeLanguage: 'en',
+  activeLanguage: 'auto',
   sourceLanguage: 'en',
+  isOriginal: true,
+  isTranslated: false,
   activeIndex: -1,
   autoScroll: true,
   dualSubtitleMode: false,
+  readingMode: false,
   searchQuery: '',
   isPlaying: false,
 };
@@ -29,6 +32,7 @@ let elements = {};
 document.addEventListener('DOMContentLoaded', () => {
   cacheDOMElements();
   initLanguageSelectors();
+  initSettings();
   bindEvents();
   checkUrlParams();
 });
@@ -49,18 +53,28 @@ function cacheDOMElements() {
     videoContainer: document.getElementById('video-player-wrapper'),
     videoTitle: document.getElementById('video-title'),
     videoAuthor: document.getElementById('video-author'),
-    videoStats: document.getElementById('video-stats'),
 
-    // Controls
+    // Badges & Toolbar Controls
     langSelectBtn: document.getElementById('lang-select-btn'),
     selectedLangBadge: document.getElementById('selected-lang-badge'),
+    detectedAudioBadge: document.getElementById('detected-audio-badge'),
+    transModeBadge: document.getElementById('trans-mode-badge'),
     langModal: document.getElementById('lang-modal'),
     closeLangModalBtn: document.getElementById('close-lang-modal'),
     langSearchInput: document.getElementById('lang-search-input'),
     langGrid: document.getElementById('lang-grid'),
 
-    // Dual Subtitle & Auto-scroll Toggles
+    // Settings Modal
+    settingsNavBtn: document.getElementById('settings-nav-btn'),
+    settingsModal: document.getElementById('settings-modal'),
+    closeSettingsModalBtn: document.getElementById('close-settings-modal'),
+    prefLangSelect: document.getElementById('pref-lang-select'),
+    geminiApiKeyInput: document.getElementById('gemini-api-key-input'),
+    saveSettingsBtn: document.getElementById('save-settings-btn'),
+
+    // Dual Subtitle, Reading Mode & Auto-scroll Toggles
     dualSubToggle: document.getElementById('dual-sub-toggle'),
+    readingModeToggle: document.getElementById('reading-mode-toggle'),
     autoScrollToggle: document.getElementById('auto-scroll-toggle'),
     searchTranscriptInput: document.getElementById('search-transcript-input'),
 
@@ -89,6 +103,17 @@ function cacheDOMElements() {
     // Toast
     toast: document.getElementById('toast'),
   };
+}
+
+function initSettings() {
+  const preferredLang = TranscriberService.getPreferredLanguage();
+  if (elements.prefLangSelect) {
+    elements.prefLangSelect.value = preferredLang || 'auto';
+  }
+  const geminiKey = TranscriberService.getGeminiApiKey();
+  if (elements.geminiApiKeyInput) {
+    elements.geminiApiKeyInput.value = geminiKey || '';
+  }
 }
 
 function bindEvents() {
@@ -137,11 +162,50 @@ function bindEvents() {
     renderLanguageOptions(e.target.value);
   });
 
+  // Settings Modal
+  if (elements.settingsNavBtn) {
+    elements.settingsNavBtn.addEventListener('click', () => {
+      initSettings();
+      elements.settingsModal.classList.add('active');
+    });
+  }
+
+  if (elements.closeSettingsModalBtn) {
+    elements.closeSettingsModalBtn.addEventListener('click', () => {
+      elements.settingsModal.classList.remove('active');
+    });
+  }
+
+  if (elements.saveSettingsBtn) {
+    elements.saveSettingsBtn.addEventListener('click', () => {
+      const pref = elements.prefLangSelect.value;
+      const key = elements.geminiApiKeyInput.value.trim();
+      localStorage.setItem('PREFERRED_LANGUAGE', pref);
+      localStorage.setItem('GEMINI_API_KEY', key);
+
+      elements.settingsModal.classList.remove('active');
+      showToast('Settings saved successfully!', 'success');
+
+      // If video is loaded and user changed preference, translate
+      if (state.currentVideoId) {
+        handleLanguageChange(pref);
+      }
+    });
+  }
+
   // Dual Subtitle Toggle
   elements.dualSubToggle.addEventListener('change', (e) => {
     state.dualSubtitleMode = e.target.checked;
     renderTranscript();
   });
+
+  // Reading / Paragraph Mode Toggle
+  if (elements.readingModeToggle) {
+    elements.readingModeToggle.addEventListener('change', (e) => {
+      state.readingMode = e.target.checked;
+      renderTranscript();
+    });
+  }
 
   // Auto-scroll Toggle
   elements.autoScrollToggle.addEventListener('change', (e) => {
@@ -206,6 +270,7 @@ function bindEvents() {
   // Close modals on background click
   window.addEventListener('click', (e) => {
     if (e.target === elements.langModal) elements.langModal.classList.remove('active');
+    if (e.target === elements.settingsModal) elements.settingsModal.classList.remove('active');
     if (e.target === elements.exportModal) elements.exportModal.classList.remove('active');
     if (e.target === elements.summaryModal) elements.summaryModal.classList.remove('active');
   });
@@ -213,7 +278,7 @@ function bindEvents() {
 
 function initLanguageSelectors() {
   renderLanguageOptions();
-  updateSelectedLanguageDisplay('en');
+  updateSelectedLanguageDisplay('auto');
 }
 
 function renderLanguageOptions(searchQuery = '') {
@@ -243,8 +308,9 @@ function renderLanguageOptions(searchQuery = '') {
     groupGrid.className = 'lang-sub-grid';
 
     langs.forEach(lang => {
+      const isSelected = state.activeLanguage === lang.code;
       const btn = document.createElement('button');
-      btn.className = `lang-card ${state.activeLanguage === lang.code ? 'active' : ''}`;
+      btn.className = `lang-card ${isSelected ? 'active' : ''}`;
       btn.innerHTML = `
         <span class="lang-flag">${lang.flag}</span>
         <div class="lang-text">
@@ -274,21 +340,25 @@ async function handleFetchVideo() {
     return;
   }
 
-  showLoading(true);
+  showLoading(true, 'Extracting authentic audio captions...');
   hideStatusAlert();
 
   try {
+    const preferredLang = TranscriberService.getPreferredLanguage();
+
     // 1. Fetch metadata and transcript concurrently
     const [transcriptData, videoInfo] = await Promise.all([
-      transcriber.fetchTranscript(videoId, state.activeLanguage),
-      transcriber.fetchVideoInfo(videoId).catch(() => ({ title: 'YouTube Video', author: 'YouTube' })),
+      transcriber.fetchTranscript(videoId, preferredLang),
+      transcriber.fetchVideoInfo(videoId).catch(() => ({ title: 'YouTube Video', author: 'YouTube Creator' })),
     ]);
 
     state.currentVideoId = videoId;
     state.videoInfo = videoInfo;
     state.transcript = transcriptData.transcript;
     state.sourceLanguage = transcriptData.sourceLanguage || 'en';
-    state.activeLanguage = transcriptData.language || state.activeLanguage;
+    state.activeLanguage = transcriptData.language || preferredLang;
+    state.isOriginal = transcriptData.isOriginal !== false;
+    state.isTranslated = transcriptData.isTranslated === true;
 
     // 2. Initialize YouTube Player
     await loadVideo('youtube-player-iframe', videoId, {
@@ -303,13 +373,21 @@ async function handleFetchVideo() {
     elements.videoAuthor.textContent = videoInfo.author ? `by ${videoInfo.author}` : '';
     elements.segmentCountBadge.textContent = `${state.transcript.length} lines`;
 
+    // 4. Update Audio Language Badges
+    const srcLangObj = getLanguageByCode(state.sourceLanguage);
+    if (elements.detectedAudioBadge) {
+      elements.detectedAudioBadge.textContent = `🎙️ Audio: ${srcLangObj.flag} ${srcLangObj.name}`;
+      elements.detectedAudioBadge.title = `Original spoken audio in video is ${srcLangObj.name}`;
+    }
+
+    updateModeBadge();
     updateSelectedLanguageDisplay(state.activeLanguage);
     renderTranscript();
-    showToast('Transcript loaded successfully!', 'success');
+    showToast(`Loaded ${state.transcript.length} authentic transcript lines!`, 'success');
   } catch (err) {
     console.error('Error fetching video transcript:', err);
     showStatusAlert(
-      err.message || 'Could not load transcript for this video. Make sure the video has captions available.',
+      err.message || 'Could not load transcript for this video. Make sure subtitles are available on this video.',
       'error'
     );
   } finally {
@@ -318,19 +396,23 @@ async function handleFetchVideo() {
 }
 
 async function handleLanguageChange(langCode) {
-  if (state.activeLanguage === langCode) return;
+  if (state.activeLanguage === langCode && state.transcript.length > 0) return;
 
-  showLoading(true, `Translating transcript to ${getLanguageByCode(langCode).name}...`);
+  const targetLangObj = getLanguageByCode(langCode);
+  showLoading(true, `Generating authentic translation in ${targetLangObj.name}...`);
 
   try {
     const data = await transcriber.translateToLanguage(langCode);
     state.activeLanguage = langCode;
     state.transcript = data.transcript;
+    state.isOriginal = data.isOriginal;
+    state.isTranslated = data.isTranslated;
 
+    updateModeBadge();
     updateSelectedLanguageDisplay(langCode);
     renderTranscript();
     renderLanguageOptions(elements.langSearchInput.value);
-    showToast(`Translated to ${getLanguageByCode(langCode).name}!`, 'success');
+    showToast(`Translated authentically into ${targetLangObj.name}!`, 'success');
   } catch (err) {
     console.error('Translation error:', err);
     showToast(`Translation failed: ${err.message}`, 'error');
@@ -339,9 +421,29 @@ async function handleLanguageChange(langCode) {
   }
 }
 
+function updateModeBadge() {
+  if (!elements.transModeBadge) return;
+
+  if (state.isOriginal || state.activeLanguage === state.sourceLanguage || state.activeLanguage === 'auto') {
+    elements.transModeBadge.style.display = 'inline-block';
+    elements.transModeBadge.textContent = '🎙️ Verbatim Original';
+    elements.transModeBadge.className = 'badge badge-success';
+  } else {
+    elements.transModeBadge.style.display = 'inline-block';
+    const isGemini = !!TranscriberService.getGeminiApiKey();
+    elements.transModeBadge.textContent = isGemini ? '✨ Gemini AI Fluent' : '✨ Authentic Contextual AI';
+    elements.transModeBadge.className = 'badge badge-primary';
+  }
+}
+
 function updateSelectedLanguageDisplay(code) {
-  const lang = getLanguageByCode(code);
-  elements.selectedLangBadge.innerHTML = `${lang.flag} ${lang.name} (${lang.nativeName})`;
+  if (code === 'auto') {
+    const srcLang = getLanguageByCode(state.sourceLanguage);
+    elements.selectedLangBadge.innerHTML = `🎙️ Original (${srcLang.name})`;
+  } else {
+    const lang = getLanguageByCode(code);
+    elements.selectedLangBadge.innerHTML = `${lang.flag} ${lang.name} (${lang.nativeName})`;
+  }
 }
 
 function renderTranscript() {
@@ -352,6 +454,13 @@ function renderTranscript() {
     return;
   }
 
+  // 1. Reading / Paragraph Mode
+  if (state.readingMode) {
+    renderParagraphReadingView();
+    return;
+  }
+
+  // 2. Standard Subtitle Synced Rows
   state.transcript.forEach((item, index) => {
     const row = document.createElement('div');
     row.className = `transcript-row ${index === state.activeIndex ? 'active' : ''}`;
@@ -395,7 +504,7 @@ function renderTranscript() {
     // Text to Speech
     row.querySelector('.speak-btn').addEventListener('click', (e) => {
       e.stopPropagation();
-      speakText(item.text, state.activeLanguage);
+      speakText(item.text, state.activeLanguage === 'auto' ? state.sourceLanguage : state.activeLanguage);
     });
 
     // Copy single line
@@ -413,10 +522,48 @@ function renderTranscript() {
   });
 }
 
+function renderParagraphReadingView() {
+  const container = document.createElement('div');
+  container.className = 'reading-paragraphs-container';
+  container.style.cssText = 'padding: 1.25rem; line-height: 1.85; font-size: 1.05rem;';
+
+  // Group every 6-8 items into a readable paragraph
+  const PARAGRAPH_SIZE = 7;
+  for (let i = 0; i < state.transcript.length; i += PARAGRAPH_SIZE) {
+    const chunk = state.transcript.slice(i, i + PARAGRAPH_SIZE);
+    const p = document.createElement('p');
+    p.style.cssText = 'margin-bottom: 1.5rem; background: var(--bg-card); padding: 1rem 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);';
+
+    const startTime = TranscriberService.formatTime(chunk[0].start);
+    const timeBtn = document.createElement('button');
+    timeBtn.className = 'time-badge';
+    timeBtn.style.cssText = 'margin-right: 8px; vertical-align: middle; display: inline-flex;';
+    timeBtn.innerHTML = `<span>▶</span> ${startTime}`;
+    timeBtn.addEventListener('click', () => seekTo(chunk[0].start));
+
+    p.appendChild(timeBtn);
+
+    chunk.forEach(item => {
+      const span = document.createElement('span');
+      span.textContent = item.text + ' ';
+      span.style.cursor = 'pointer';
+      span.title = `Click to play from ${TranscriberService.formatTime(item.start)}`;
+      span.addEventListener('click', () => seekTo(item.start));
+      p.appendChild(span);
+    });
+
+    container.appendChild(p);
+  }
+
+  elements.transcriptList.appendChild(container);
+}
+
 function handlePlaybackTimeUpdate({ currentTime, duration, isPlaying }) {
   if (!state.transcript || state.transcript.length === 0) return;
 
   elements.activeTimeDisplay.textContent = `${TranscriberService.formatTime(currentTime)} / ${TranscriberService.formatTime(duration)}`;
+
+  if (state.readingMode) return;
 
   // Find corresponding transcript index
   let foundIndex = -1;
@@ -431,19 +578,16 @@ function handlePlaybackTimeUpdate({ currentTime, duration, isPlaying }) {
     }
   }
 
-  // If before first line
   if (foundIndex === -1 && currentTime < state.transcript[0].start) {
     foundIndex = 0;
   }
 
   if (foundIndex !== -1 && foundIndex !== state.activeIndex) {
-    // Unmark old active
     const oldRow = document.getElementById(`transcript-row-${state.activeIndex}`);
     if (oldRow) oldRow.classList.remove('active');
 
     state.activeIndex = foundIndex;
 
-    // Mark new active
     const newRow = document.getElementById(`transcript-row-${foundIndex}`);
     if (newRow) {
       newRow.classList.add('active');
@@ -489,7 +633,7 @@ async function handleGenerateSummary() {
     const summary = await SummaryService.generateSummary(
       state.transcript,
       state.videoInfo?.title,
-      state.activeLanguage
+      state.activeLanguage === 'auto' ? state.sourceLanguage : state.activeLanguage
     );
 
     let bulletsHtml = summary.keyTakeaways
@@ -533,7 +677,7 @@ function speakText(text, langCode) {
     return;
   }
 
-  window.speechSynthesis.cancel(); // Stop any ongoing speech
+  window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = langCode || 'en';
   utterance.rate = 0.95;

@@ -4,6 +4,7 @@
  */
 
 export const REGIONS = {
+  AUTO: '✨ Audio Language Detection',
   POPULAR: '🔥 Most Popular',
   INDIAN: '🇮🇳 Indian Languages',
   EUROPEAN: '🇪🇺 European',
@@ -13,6 +14,9 @@ export const REGIONS = {
 };
 
 export const LANGUAGES = [
+  // Original Video Audio Language
+  { code: 'auto', name: 'Original Audio Language', nativeName: 'Auto Detect (Verbatim Creator Speech)', flag: '🎙️', region: REGIONS.AUTO },
+
   // Most Popular Global
   { code: 'en', name: 'English', nativeName: 'English', flag: '🇺🇸', region: REGIONS.POPULAR },
   { code: 'es', name: 'Spanish', nativeName: 'Español', flag: '🇪🇸', region: REGIONS.POPULAR },

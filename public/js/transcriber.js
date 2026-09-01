@@ -73,6 +73,26 @@ export class TranscriberService {
   }
 
   /**
+   * Get user-configured Gemini API Key if any
+   */
+  static getGeminiApiKey() {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('GEMINI_API_KEY') || '';
+    }
+    return '';
+  }
+
+  /**
+   * Get preferred target language (defaults to 'auto' for original audio)
+   */
+  static getPreferredLanguage() {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('PREFERRED_LANGUAGE') || 'auto';
+    }
+    return 'auto';
+  }
+
+  /**
    * Fetch Video Metadata
    */
   async fetchVideoInfo(videoId) {
@@ -85,13 +105,24 @@ export class TranscriberService {
   }
 
   /**
-   * Fetch Transcript for Video
+   * Fetch Transcript for Video (Auto-detects spoken audio language & handles preferred language)
    */
-  async fetchTranscript(videoId, lang = 'en') {
+  async fetchTranscript(videoId, lang = 'auto', mode = 'contextual') {
     this.currentVideoId = videoId;
     this.activeLanguage = lang;
 
-    const res = await fetch(AppConfig.apiUrl(`/api/transcript?v=${videoId}&lang=${lang}`));
+    const apiKey = TranscriberService.getGeminiApiKey();
+    const queryParams = new URLSearchParams({
+      v: videoId,
+      lang: lang || 'auto',
+      mode: apiKey ? 'gemini' : mode,
+    });
+
+    if (apiKey) {
+      queryParams.append('apiKey', apiKey);
+    }
+
+    const res = await fetch(AppConfig.apiUrl(`/api/transcript?${queryParams.toString()}`));
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error || 'Could not fetch transcript for this video');
@@ -100,27 +131,44 @@ export class TranscriberService {
     const data = await res.json();
     this.currentData = data;
     this.sourceLanguage = data.sourceLanguage || 'en';
+    this.activeLanguage = data.language || lang;
 
-    // Store in cache
-    this.translationCache.set(lang, data.transcript);
+    // Cache the original and current transcript
+    this.translationCache.set(this.activeLanguage, data.transcript);
     return data;
   }
 
   /**
-   * Switch Language (Uses translation cache or backend batch translation)
+   * Switch Language using Authentic Contextual / AI Translation
    */
-  async translateToLanguage(targetLang) {
+  async translateToLanguage(targetLang, mode = 'contextual') {
     if (!this.currentData || !this.currentData.transcript) {
       throw new Error('No transcript loaded yet');
+    }
+
+    // If switching back to source language
+    if (targetLang === 'auto' || targetLang === this.sourceLanguage) {
+      const orig = this.translationCache.get('orig') || this.translationCache.get(this.sourceLanguage);
+      if (orig) {
+        this.activeLanguage = this.sourceLanguage;
+        this.currentData.transcript = orig;
+        this.currentData.language = this.sourceLanguage;
+        this.currentData.isOriginal = true;
+        this.currentData.isTranslated = false;
+        return this.currentData;
+      }
     }
 
     if (this.translationCache.has(targetLang)) {
       this.activeLanguage = targetLang;
       this.currentData.transcript = this.translationCache.get(targetLang);
       this.currentData.language = targetLang;
+      this.currentData.isOriginal = targetLang === this.sourceLanguage;
+      this.currentData.isTranslated = targetLang !== this.sourceLanguage;
       return this.currentData;
     }
 
+    const apiKey = TranscriberService.getGeminiApiKey();
     const res = await fetch(AppConfig.apiUrl('/api/translate'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -129,6 +177,8 @@ export class TranscriberService {
         targetLang,
         sourceLang: this.sourceLanguage,
         videoId: this.currentVideoId,
+        mode: apiKey ? 'gemini' : mode,
+        apiKey: apiKey || undefined,
       }),
     });
 
@@ -141,6 +191,8 @@ export class TranscriberService {
     this.activeLanguage = targetLang;
     this.currentData.transcript = data.segments;
     this.currentData.language = targetLang;
+    this.currentData.isOriginal = targetLang === this.sourceLanguage;
+    this.currentData.isTranslated = targetLang !== this.sourceLanguage;
     this.translationCache.set(targetLang, data.segments);
 
     return this.currentData;
