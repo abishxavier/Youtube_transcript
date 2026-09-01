@@ -511,6 +511,66 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Debug Endpoint for diagnosing Render network/IP responses
+app.get('/api/debug', async (req, res) => {
+  const { v } = req.query;
+  const videoId = extractVideoId(v) || 'c8EZrrTEfmk';
+
+  const diagnostics = {
+    videoId,
+    timestamp: new Date().toISOString(),
+  };
+
+  // 1. Test InnerTube ANDROID
+  try {
+    const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+      },
+      body: JSON.stringify({
+        context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
+        videoId,
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+
+    diagnostics.innerTubeStatus = resp.status;
+    const data = await resp.json();
+    diagnostics.playability = data?.playabilityStatus;
+    const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    diagnostics.innerTubeTracksCount = tracks ? tracks.length : 0;
+    if (tracks && tracks.length > 0) {
+      diagnostics.firstTrack = {
+        lang: tracks[0].languageCode,
+        baseUrl: tracks[0].baseUrl.slice(0, 100),
+      };
+      // Try timedtext fetch
+      const ttResp = await fetch(tracks[0].baseUrl, {
+        headers: { 'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)' },
+        signal: AbortSignal.timeout(6000),
+      });
+      diagnostics.timedTextStatus = ttResp.status;
+      const xml = await ttResp.text();
+      diagnostics.timedTextLength = xml.length;
+      diagnostics.timedTextSample = xml.slice(0, 150);
+    }
+  } catch (err) {
+    diagnostics.innerTubeError = err.message;
+  }
+
+  // 2. Test YoutubeTranscript
+  try {
+    const raw = await YoutubeTranscript.fetchTranscript(videoId);
+    diagnostics.youtubeTranscriptCount = raw.length;
+  } catch (err) {
+    diagnostics.youtubeTranscriptError = err.message;
+  }
+
+  res.json(diagnostics);
+});
+
 // 1. Video Info Endpoint
 app.get('/api/video-info', async (req, res) => {
   const { url, v } = req.query;
