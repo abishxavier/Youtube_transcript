@@ -597,22 +597,39 @@ app.get('/api/transcript', async (req, res) => {
         detectedSourceLang = targetTrack.languageCode || 'en';
         transcript = await fetchTimedText(targetTrack.baseUrl);
       }
+
+      // If primary track timedtext failed, try any other available track
+      if (!transcript || transcript.length === 0) {
+        for (const trk of captionTracks) {
+          if (trk.baseUrl && trk !== targetTrack) {
+            transcript = await fetchTimedText(trk.baseUrl);
+            if (transcript && transcript.length > 0) {
+              detectedSourceLang = trk.languageCode || detectedSourceLang;
+              break;
+            }
+          }
+        }
+      }
     }
 
-    // Step 2: Fallback to YoutubeTranscript library
+    // Step 2: Fallback to YoutubeTranscript library across detected & default languages
     if (!transcript || transcript.length === 0) {
-      try {
-        const raw = await YoutubeTranscript.fetchTranscript(videoId);
-        if (raw && raw.length > 0) {
-          transcript = raw.map(item => ({
-            text: decodeHtmlEntities(item.text),
-            start: item.offset / 1000,
-            duration: item.duration / 1000,
-          }));
-          detectedSourceLang = raw[0]?.lang || 'en';
+      const tryLangs = [requestedLang, detectedSourceLang, 'ta', 'hi', 'en', undefined].filter(Boolean);
+      for (const tLang of tryLangs) {
+        try {
+          const raw = await YoutubeTranscript.fetchTranscript(videoId, tLang ? { lang: tLang } : undefined);
+          if (raw && raw.length > 0) {
+            transcript = raw.map(item => ({
+              text: decodeHtmlEntities(item.text),
+              start: item.offset / 1000,
+              duration: item.duration / 1000,
+            }));
+            detectedSourceLang = raw[0]?.lang || tLang || detectedSourceLang;
+            break;
+          }
+        } catch (ytErr) {
+          // continue to next fallback
         }
-      } catch (ytErr) {
-        console.warn('YoutubeTranscript fallback warning:', ytErr.message);
       }
     }
 
