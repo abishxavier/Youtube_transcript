@@ -3,6 +3,7 @@ import cors from 'cors';
 import { YoutubeTranscript } from 'youtube-transcript';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,6 +14,43 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Proxy support for cloud deployments (Render / AWS / Webshare)
+const rawProxyEnv = process.env.HTTP_PROXY || process.env.HTTPS_PROXY || '';
+const proxyUrls = rawProxyEnv
+  ? rawProxyEnv.split(',').map(s => s.trim()).filter(Boolean)
+  : [];
+const proxyAgents = proxyUrls.map(url => {
+  const normalized = url.startsWith('http://') || url.startsWith('https://') ? url : `http://${url}`;
+  return new ProxyAgent(normalized);
+});
+
+let proxyRotationIndex = 0;
+function getActiveProxyAgent() {
+  if (proxyAgents.length === 0) return null;
+  const agent = proxyAgents[proxyRotationIndex % proxyAgents.length];
+  proxyRotationIndex++;
+  return agent;
+}
+
+/**
+ * Universal YouTube Fetcher with automatic Proxy support & direct fallback
+ */
+async function fetchYouTube(url, options = {}) {
+  const agent = getActiveProxyAgent();
+  if (agent) {
+    try {
+      const res = await undiciFetch(url, { ...options, dispatcher: agent });
+      if (res.ok) return res;
+      // If proxy returns 429 / 403 on this specific request (e.g. timedtext), fallback to direct fetch
+      console.warn(`[Proxy] Request returned ${res.status}, falling back to direct fetch...`);
+    } catch (proxyErr) {
+      console.warn(`[Proxy] Connection error (${proxyErr.message}), falling back to direct fetch...`);
+    }
+  }
+  // Native direct fetch
+  return fetch(url, options);
+}
 
 // In-memory cache for transcripts & translations to minimize API load & boost speed
 const transcriptCache = new Map();
@@ -79,7 +117,7 @@ async function fetchVideoInfo(videoId) {
  */
 async function fetchInnerTubeCaptionTracks(videoId) {
   try {
-    const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+    const resp = await fetchYouTube('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -96,7 +134,7 @@ async function fetchInnerTubeCaptionTracks(videoId) {
         },
         videoId,
       }),
-      signal: AbortSignal.timeout(6000),
+      signal: AbortSignal.timeout(7000),
     });
 
     if (resp.ok) {
@@ -124,13 +162,13 @@ async function fetchCaptionsTrack(videoId) {
 
   // 2. Secondary: Web page scrape
   try {
-    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+    const response = await fetchYouTube(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(6000),
     });
     const html = await response.text();
 
@@ -157,11 +195,11 @@ async function fetchCaptionsTrack(videoId) {
  */
 async function fetchTimedText(baseUrl) {
   try {
-    const res = await fetch(baseUrl, {
+    const res = await fetchYouTube(baseUrl, {
       headers: {
         'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)'
       },
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(9000),
     });
 
     if (!res.ok) return null;
@@ -922,6 +960,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
   console.log(`🚀 Multilingual YouTube Transcriber & Player Server`);
   console.log(`🌐 Host Interface: 0.0.0.0:${PORT}`);
+  if (proxyAgents.length > 0) {
+    console.log(`🔒 Proxy Active: ${proxyAgents.length} proxy endpoint(s) configured`);
+  } else {
+    console.log(`ℹ️  No HTTP_PROXY configured. Running direct connection.`);
+  }
   console.log(`📱 Ready for Android / Google Play Store packaging`);
   console.log(`====================================================`);
 });

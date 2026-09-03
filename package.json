@@ -28,6 +28,7 @@
     "@capacitor/core": "^8.5.1",
     "cors": "^2.8.5",
     "express": "^4.19.2",
+    "undici": "^8.10.1",
     "youtube-transcript": "^1.2.1"
   }
 }
