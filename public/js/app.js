@@ -360,20 +360,14 @@ async function handleFetchVideo() {
     state.isOriginal = transcriptData.isOriginal !== false;
     state.isTranslated = transcriptData.isTranslated === true;
 
-    // 2. Initialize YouTube Player
-    await loadVideo('youtube-player-iframe', videoId, {
-      onTimeUpdate: (status) => handlePlaybackTimeUpdate(status),
-      onReady: () => console.log('Player ready'),
-    });
-
-    // 3. Update UI
+    // 2. Display Workspace & Transcript immediately
     elements.welcomeSection.style.display = 'none';
     elements.appContent.style.display = 'grid';
     elements.videoTitle.textContent = videoInfo.title;
     elements.videoAuthor.textContent = videoInfo.author ? `by ${videoInfo.author}` : '';
     elements.segmentCountBadge.textContent = `${state.transcript.length} lines`;
 
-    // 4. Update Audio Language Badges
+    // 3. Update Audio Language Badges
     const srcLangObj = getLanguageByCode(state.sourceLanguage);
     if (elements.detectedAudioBadge) {
       elements.detectedAudioBadge.textContent = `🎙️ Audio: ${srcLangObj.flag} ${srcLangObj.name}`;
@@ -384,6 +378,12 @@ async function handleFetchVideo() {
     updateSelectedLanguageDisplay(state.activeLanguage);
     renderTranscript();
     showToast(`Loaded ${state.transcript.length} authentic transcript lines!`, 'success');
+
+    // 4. Initialize YouTube Player in background (does not block transcript)
+    loadVideo('youtube-player-iframe', videoId, {
+      onTimeUpdate: (status) => handlePlaybackTimeUpdate(status),
+      onReady: () => console.log('Player ready'),
+    }).catch(playerErr => console.warn('Player load error:', playerErr));
   } catch (err) {
     console.error('Error fetching video transcript:', err);
     showStatusAlert(

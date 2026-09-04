@@ -1077,3 +1077,443 @@ body {
   color: var(--primary-glow);
   text-decoration: underline;
 }
+
+/* ==========================================================================
+   Comprehensive Mobile & Phone UI Design System
+   Native App Feel, Sticky Player, Bottom Sheets & Touch Optimization
+   ========================================================================== */
+
+@keyframes slideUpSheet {
+  from {
+    transform: translateY(100%);
+    opacity: 0.5;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Tablets & Small Laptops (max-width: 1024px) */
+@media (max-width: 1024px) {
+  .workspace-grid {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .transcript-column {
+    height: auto;
+    min-height: 500px;
+    max-height: 750px;
+  }
+}
+
+/* Smartphones & Mobile Devices (max-width: 768px) */
+@media (max-width: 768px) {
+  /* Safe-area & Container */
+  .container {
+    padding: 0 14px;
+  }
+
+  /* Compact Mobile Header */
+  .navbar {
+    padding: 0.75rem 0;
+    backdrop-filter: blur(16px);
+  }
+
+  .brand-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 1.15rem;
+  }
+
+  .brand-name {
+    font-size: 1.1rem;
+  }
+
+  .brand-tag {
+    display: none;
+  }
+
+  .nav-actions .badge {
+    display: none;
+  }
+
+  .btn-sm {
+    padding: 7px 12px;
+    font-size: 0.82rem;
+  }
+
+  /* Hero Section on Mobile */
+  .hero-section {
+    padding: 1.5rem 0 1rem 0;
+  }
+
+  .hero-title {
+    font-size: 1.65rem;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.5rem;
+  }
+
+  .hero-subtitle {
+    font-size: 0.88rem;
+    margin-bottom: 1.25rem;
+    padding: 0 6px;
+  }
+
+  /* Touch-Friendly Input Card */
+  .input-card {
+    padding: 10px;
+    border-radius: 18px;
+    background: rgba(18, 24, 38, 0.92);
+  }
+
+  .input-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .url-input {
+    flex: 1 1 auto;
+    width: calc(100% - 90px);
+    font-size: 0.95rem;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 10px;
+  }
+
+  #paste-btn {
+    flex-shrink: 0;
+    width: 78px;
+    height: 42px;
+    padding: 0 8px;
+    font-size: 0.82rem;
+    border-radius: 10px;
+  }
+
+  #fetch-btn {
+    width: 100%;
+    height: 46px;
+    font-size: 1rem;
+    font-weight: 700;
+    border-radius: 12px;
+  }
+
+  /* Horizontally Scrollable Sample Pills */
+  .demo-pill-container {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    justify-content: flex-start;
+    padding: 6px 2px;
+    gap: 8px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    margin-top: 1rem;
+  }
+
+  .demo-pill-container::-webkit-scrollbar {
+    display: none;
+  }
+
+  .demo-label {
+    flex-shrink: 0;
+    font-size: 0.78rem;
+  }
+
+  .demo-pill {
+    flex-shrink: 0;
+    white-space: nowrap;
+    padding: 6px 12px;
+    font-size: 0.78rem;
+  }
+
+  /* Compact Mobile Welcome Grid */
+  .welcome-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 1.5rem;
+    padding-bottom: 2rem;
+  }
+
+  .feature-card {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .feature-icon {
+    font-size: 1.5rem;
+    margin-bottom: 8px;
+  }
+
+  .feature-title {
+    font-size: 0.95rem;
+    margin-bottom: 4px;
+  }
+
+  .feature-desc {
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+
+  /* ==========================================================================
+     Active Workspace: Sticky Mobile Video & Flowing Transcript
+     ========================================================================== */
+  .workspace-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 0.5rem 0 3rem 0;
+  }
+
+  .player-column {
+    position: sticky;
+    top: 54px;
+    z-index: 60;
+    margin: 0 -14px;
+    background: rgba(10, 13, 20, 0.96);
+    backdrop-filter: blur(18px);
+  }
+
+  .player-card {
+    padding: 0;
+    border-radius: 0 0 16px 16px;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    background: transparent;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7);
+  }
+
+  .video-player-wrapper {
+    border-radius: 0;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+  }
+
+  .video-meta-box {
+    padding: 10px 14px 12px 14px;
+    gap: 4px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .video-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .video-author {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+  }
+
+  .video-stats-bar {
+    margin-top: 4px;
+    padding-top: 6px;
+    font-size: 0.78rem;
+  }
+
+  /* Mobile Transcript Container */
+  .transcript-column {
+    border-radius: 16px;
+    height: auto;
+    min-height: calc(100vh - 380px);
+    max-height: none;
+  }
+
+  .transcript-header {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+
+  .toolbar-top {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .lang-picker-btn {
+    width: 100%;
+    justify-content: space-between;
+    padding: 10px 14px;
+    font-size: 0.88rem;
+    border-radius: 12px;
+  }
+
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .toolbar-actions .btn {
+    width: 100%;
+    justify-content: center;
+    padding: 10px;
+    font-size: 0.85rem;
+    border-radius: 10px;
+  }
+
+  .toolbar-bottom {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .search-box {
+    width: 100%;
+    min-width: unset;
+  }
+
+  .search-input {
+    padding: 10px 14px 10px 36px;
+    font-size: 0.9rem;
+    border-radius: 10px;
+  }
+
+  .toggle-group {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    overflow-x: auto;
+    gap: 12px;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .switch-label {
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  /* Mobile Subtitle Rows */
+  .transcript-list {
+    padding: 10px;
+    gap: 6px;
+    max-height: 65vh;
+  }
+
+  .transcript-row {
+    padding: 10px 12px;
+    gap: 10px;
+    border-radius: 12px;
+  }
+
+  .time-badge {
+    font-size: 0.78rem;
+    padding: 4px 8px;
+    border-radius: 6px;
+  }
+
+  .row-text {
+    font-size: 0.92rem;
+    line-height: 1.45;
+  }
+
+  .row-actions-col {
+    opacity: 0.75; /* Always visible for touch tapping on mobile */
+  }
+
+  .icon-action-btn {
+    padding: 6px;
+    font-size: 0.95rem;
+  }
+
+  /* ==========================================================================
+     Mobile Modals as Native Bottom Sheets
+     ========================================================================== */
+  .modal-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .modal-card {
+    border-radius: 24px 24px 0 0;
+    max-height: 85vh;
+    border-bottom: none;
+    border-left: none;
+    border-right: none;
+    animation: slideUpSheet 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  .modal-card::before {
+    content: '';
+    display: block;
+    width: 38px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.25);
+    margin: 10px auto 4px auto;
+  }
+
+  .modal-header {
+    padding: 12px 18px;
+  }
+
+  .modal-title {
+    font-size: 1.15rem;
+  }
+
+  .modal-body {
+    padding: 14px 16px;
+  }
+
+  .lang-sub-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .lang-card {
+    padding: 12px 14px;
+    border-radius: 12px;
+  }
+
+  .export-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .export-card {
+    padding: 14px 16px;
+    flex-direction: row;
+    align-items: center;
+    gap: 14px;
+    border-radius: 14px;
+  }
+
+  .export-card-icon {
+    font-size: 1.8rem;
+    flex-shrink: 0;
+  }
+
+  .export-card-title {
+    font-size: 0.95rem;
+  }
+
+  .export-card-desc {
+    font-size: 0.78rem;
+  }
+}
+
+/* Extra Small Phones (max-width: 480px) */
+@media (max-width: 480px) {
+  .welcome-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-title {
+    font-size: 1.45rem;
+  }
+
+  .toolbar-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+}

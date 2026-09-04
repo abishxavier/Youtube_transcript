@@ -9,7 +9,7 @@ let currentVideoId = null;
 let onTimeUpdateCallback = null;
 let onStateChangeCallback = null;
 
-// Initialize YouTube IFrame API
+// Initialize YouTube IFrame API with timeout and adblocker resiliency
 export function initYouTubeAPI() {
   return new Promise((resolve) => {
     if (window.YT && window.YT.Player) {
@@ -18,17 +18,46 @@ export function initYouTubeAPI() {
       return;
     }
 
+    let resolved = false;
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        console.warn('YouTube Iframe API timed out (adblocker or slow connection). Proceeding.');
+        resolve();
+      }
+    }, 2500);
+
     // Set callback
+    const prevCallback = window.onYouTubeIframeAPIReady;
     window.onYouTubeIframeAPIReady = () => {
+      clearTimeout(timeout);
+      if (prevCallback) prevCallback();
       isApiReady = true;
-      resolve();
+      if (!resolved) {
+        resolved = true;
+        resolve();
+      }
     };
 
-    // Load tag
-    const tag = document.createElement('script');
-    tag.src = 'https://www.youtube.com/iframe_api';
-    const firstScriptTag = document.getElementsByTagName('script')[0];
-    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+    // Load tag if not present
+    if (!document.querySelector('script[src*="iframe_api"]')) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      tag.onerror = () => {
+        clearTimeout(timeout);
+        console.warn('YouTube Iframe API script blocked or failed to load.');
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+      };
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      if (firstScriptTag && firstScriptTag.parentNode) {
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+      } else {
+        document.head.appendChild(tag);
+      }
+    }
   });
 }
 
@@ -43,41 +72,84 @@ export async function loadVideo(containerId, videoId, options = {}) {
   onStateChangeCallback = options.onStateChange || null;
 
   if (player && player.loadVideoById) {
-    player.loadVideoById({
-      videoId: videoId,
-      startSeconds: options.startSeconds || 0,
-    });
-    return player;
+    try {
+      player.loadVideoById({
+        videoId: videoId,
+        startSeconds: options.startSeconds || 0,
+      });
+      return player;
+    } catch (e) {
+      console.warn('loadVideoById failed, re-initializing player:', e);
+    }
+  }
+
+  // If window.YT.Player is still unavailable (e.g. adblocker on laptop browser)
+  if (!window.YT || !window.YT.Player) {
+    console.warn('window.YT not available, embedding standard iframe fallback');
+    const container = document.getElementById(containerId);
+    if (container) {
+      container.innerHTML = `<iframe 
+        id="yt-fallback-iframe"
+        src="https://www.youtube.com/embed/${videoId}?enablejsapi=1&playsinline=1" 
+        style="width:100%;height:100%;border:none;border-radius:inherit;" 
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+        allowfullscreen></iframe>`;
+    }
+    return null;
   }
 
   return new Promise((resolve) => {
-    player = new window.YT.Player(containerId, {
-      videoId: videoId,
-      playerVars: {
-        autoplay: 0,
-        controls: 1,
-        rel: 0,
-        modestbranding: 1,
-        playsinline: 1,
-        enablejsapi: 1,
-        origin: window.location.origin,
-      },
-      events: {
-        onReady: (event) => {
-          startTimeTracker();
-          if (options.onReady) options.onReady(event);
-          resolve(player);
+    let resolved = false;
+    const readyTimeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        console.warn('YT.Player onReady timeout reached. Resolving.');
+        resolve(player);
+      }
+    }, 3000);
+
+    try {
+      player = new window.YT.Player(containerId, {
+        videoId: videoId,
+        playerVars: {
+          autoplay: 0,
+          controls: 1,
+          rel: 0,
+          modestbranding: 1,
+          playsinline: 1,
+          enablejsapi: 1,
+          origin: window.location.origin,
         },
-        onStateChange: (event) => {
-          handleStateChange(event);
-          if (onStateChangeCallback) onStateChangeCallback(event);
+        events: {
+          onReady: (event) => {
+            clearTimeout(readyTimeout);
+            startTimeTracker();
+            if (options.onReady) options.onReady(event);
+            if (!resolved) {
+              resolved = true;
+              resolve(player);
+            }
+          },
+          onStateChange: (event) => {
+            handleStateChange(event);
+            if (onStateChangeCallback) onStateChangeCallback(event);
+          },
+          onError: (event) => {
+            clearTimeout(readyTimeout);
+            console.warn('YouTube Player Error:', event.data);
+            if (options.onError) options.onError(event);
+            if (!resolved) {
+              resolved = true;
+              resolve(player);
+            }
+          },
         },
-        onError: (event) => {
-          console.warn('YouTube Player Error:', event.data);
-          if (options.onError) options.onError(event);
-        },
-      },
-    });
+      });
+    } catch (err) {
+      clearTimeout(readyTimeout);
+      console.warn('Error creating YT.Player:', err);
+      resolve(null);
+    }
   });
 }
 
