@@ -674,6 +674,30 @@ app.get('/api/tracks', async (req, res) => {
   }
 });
 
+/**
+ * Heuristically detect spoken language from video title, author, and description
+ */
+function detectLanguageFromMetadata(text) {
+  if (!text) return null;
+  const t = text.toLowerCase();
+  if (/[\u0D00-\u0D7F]/.test(text) || t.includes('malayalam')) return 'ml';
+  if (/[\u0B80-\u0BFF]/.test(text) || t.includes('tamil')) return 'ta';
+  if (/[\u0C00-\u0C7F]/.test(text) || t.includes('telugu')) return 'te';
+  if (/[\u0C80-\u0CFF]/.test(text) || t.includes('kannada')) return 'kn';
+  if (/[\u0900-\u097F]/.test(text) || t.includes('hindi')) return 'hi';
+  if (/[\u0980-\u09FF]/.test(text) || t.includes('bengali') || t.includes('bangla')) return 'bn';
+  if (/[\u0A00-\u0A7F]/.test(text) || t.includes('punjabi')) return 'pa';
+  if (/[\u0600-\u06FF]/.test(text) || t.includes('arabic')) return 'ar';
+  if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text) || t.includes('japanese')) return 'ja';
+  if (/[\uAC00-\uD7AF]/.test(text) || t.includes('korean')) return 'ko';
+  if (/[\u4E00-\u9FFF]/.test(text) || t.includes('chinese')) return 'zh';
+  if (/[\u0400-\u04FF]/.test(text) || t.includes('russian')) return 'ru';
+  if (t.includes('spanish') || t.includes('español')) return 'es';
+  if (t.includes('french') || t.includes('français')) return 'fr';
+  if (t.includes('german') || t.includes('deutsch')) return 'de';
+  return null;
+}
+
 // 3. Transcript Endpoint (Detects Original Language & Provides Authentic Output)
 app.get('/api/transcript', async (req, res) => {
   const { url, v, lang, mode = 'contextual', apiKey } = req.query;
@@ -695,6 +719,16 @@ app.get('/api/transcript', async (req, res) => {
     let detectedSourceLang = 'en';
     let availableTracks = [];
 
+    // Pre-fetch video metadata for accurate language identification
+    const videoInfo = await fetchVideoInfo(videoId).catch(() => ({
+      title: 'YouTube Video',
+      author: 'Creator',
+      videoId,
+      thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    }));
+    const metaTitle = `${videoInfo?.title || ''} ${videoInfo?.author || ''}`.trim();
+    const guessedAudioLang = detectLanguageFromMetadata(metaTitle);
+
     // Step 1: Extract Tracks via InnerTube/Web Scraper
     const captionTracks = await fetchCaptionsTrack(videoId);
     if (captionTracks && captionTracks.length > 0) {
@@ -703,18 +737,39 @@ app.get('/api/transcript', async (req, res) => {
         languageCode: t.languageCode,
       }));
 
-      // Find exact requested track, or pick the first authentic spoken track
+      // Determine the authentic primary audio source track
+      let sourceTrack = null;
+      if (guessedAudioLang) {
+        sourceTrack = captionTracks.find(t => t.languageCode === guessedAudioLang);
+      }
+      if (!sourceTrack) {
+        // Prefer creator/manual uploaded track over ASR auto-generated tracks
+        sourceTrack = captionTracks.find(t => !t.vssId?.startsWith('a.') && t.kind !== 'asr');
+      }
+      if (!sourceTrack) {
+        // Prefer common spoken languages over arbitrary alphabetical ASR (e.g. avoiding random 'ar')
+        const commonDefaults = ['en', 'hi', 'ml', 'ta', 'te', 'kn', 'bn', 'es'];
+        for (const cLang of commonDefaults) {
+          const found = captionTracks.find(t => t.languageCode === cLang);
+          if (found) { sourceTrack = found; break; }
+        }
+      }
+      if (!sourceTrack) {
+        sourceTrack = captionTracks[0];
+      }
+
+      detectedSourceLang = sourceTrack?.languageCode || guessedAudioLang || 'en';
+
+      // Pick target track: exact requested language if exists, else sourceTrack
       let targetTrack = null;
       if (requestedLang) {
         targetTrack = captionTracks.find(t => t.languageCode === requestedLang);
       }
-      
       if (!targetTrack) {
-        targetTrack = captionTracks[0];
+        targetTrack = sourceTrack;
       }
 
       if (targetTrack && targetTrack.baseUrl) {
-        detectedSourceLang = targetTrack.languageCode || 'en';
         transcript = await fetchTimedText(targetTrack.baseUrl);
       }
 
@@ -724,7 +779,6 @@ app.get('/api/transcript', async (req, res) => {
           if (trk.baseUrl && trk !== targetTrack) {
             transcript = await fetchTimedText(trk.baseUrl);
             if (transcript && transcript.length > 0) {
-              detectedSourceLang = trk.languageCode || detectedSourceLang;
               break;
             }
           }
@@ -734,7 +788,7 @@ app.get('/api/transcript', async (req, res) => {
 
     // Step 2: Fallback to YoutubeTranscript library across detected & default languages
     if (!transcript || transcript.length === 0) {
-      const tryLangs = [requestedLang, detectedSourceLang, 'ta', 'hi', 'en', undefined].filter(Boolean);
+      const tryLangs = [requestedLang, guessedAudioLang, detectedSourceLang, 'ta', 'hi', 'ml', 'en', undefined].filter(Boolean);
       for (const tLang of tryLangs) {
         try {
           const raw = await YoutubeTranscript.fetchTranscript(videoId, tLang ? { lang: tLang } : undefined);
@@ -785,8 +839,6 @@ app.get('/api/transcript', async (req, res) => {
       );
       isTranslated = true;
     }
-
-    const videoInfo = await fetchVideoInfo(videoId);
 
     const payload = {
       videoId,

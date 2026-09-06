@@ -343,6 +343,16 @@ async function handleFetchVideo() {
   showLoading(true, 'Extracting authentic audio captions...');
   hideStatusAlert();
 
+  // Instantly clear old video transcript from UI to prevent stale data
+  if (state.currentVideoId !== videoId) {
+    transcriber.clearCache();
+    state.transcript = [];
+    state.currentVideoId = videoId;
+    if (elements.transcriptList) {
+      elements.transcriptList.innerHTML = '';
+    }
+  }
+
   try {
     const preferredLang = TranscriberService.getPreferredLanguage();
 

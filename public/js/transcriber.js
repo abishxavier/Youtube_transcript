@@ -105,9 +105,22 @@ export class TranscriberService {
   }
 
   /**
+   * Clear all cached transcripts for previous video
+   */
+  clearCache() {
+    this.translationCache.clear();
+    this.currentData = null;
+    this.currentVideoId = null;
+  }
+
+  /**
    * Fetch Transcript for Video (Auto-detects spoken audio language & handles preferred language)
    */
   async fetchTranscript(videoId, lang = 'auto', mode = 'contextual') {
+    // If switching to a different video, immediately clear all old video caches
+    if (this.currentVideoId !== videoId) {
+      this.clearCache();
+    }
     this.currentVideoId = videoId;
     this.activeLanguage = lang;
 
@@ -133,9 +146,17 @@ export class TranscriberService {
     this.sourceLanguage = data.sourceLanguage || 'en';
     this.activeLanguage = data.language || lang;
 
-    // Cache the original and current transcript
-    if (data.isOriginal || !this.translationCache.has('orig')) {
+    // Cache the original and current transcript for this video
+    if (data.isOriginal) {
       this.translationCache.set('orig', data.transcript);
+      this.translationCache.set(this.sourceLanguage, data.transcript);
+    } else {
+      const originalSegments = data.transcript.map(s => ({
+        ...s,
+        text: s.originalText || s.text,
+      }));
+      this.translationCache.set('orig', originalSegments);
+      this.translationCache.set(this.sourceLanguage, originalSegments);
     }
     this.translationCache.set(this.activeLanguage, data.transcript);
     return data;
