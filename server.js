@@ -279,38 +279,79 @@ function decodeHtmlEntities(text) {
 
 /**
  * Group fragmented subtitle lines into complete grammatical sentences
- * for contextual authentic translation.
+ * for contextual authentic translation (கோர்வையான மொழிபெயர்ப்பு).
+ * Ensures sentences are never severed across prepositions, conjunctions, or dangling particles.
  */
-function groupSubtitlesIntoSentences(segments, maxWordsPerSentence = 25) {
+function groupSubtitlesIntoSentences(segments) {
   const groups = [];
   let currentGroup = {
     texts: [],
-    segmentIndices: [],
     startTime: 0,
     endTime: 0
   };
 
+  // Trailing particles / prepositions / conjunctions that should NEVER end a sentence
+  const danglingEndRegex = /(?:के|का|की|में|से|पर|को|ने|और|या|लेकिन|कि|तो|जो|जिसमें|जिसके|जिसकी|जिसका|जिसने|जिससे|जिसपे|जिसपर|एंड|सो|अगर|तब|भी|वाला|वाली|वाले|काइंड|ஆஃப்|नहीं|of|in|to|for|with|on|at|from|by|about|as|into|like|through|after|over|between|out|against|during|without|before|under|around|among|and|but|or|nor|yet|so|that|which|who|whom|whose|where|when|why|how|because|since|although|though|while|if|unless|until|a|an|the)$/i;
+
+  // Hindi sentence-ending verb forms
+  const hindiSentenceEndRegex = /(?:है|हैं|था|थी|थे|होगा|होगी|होंगे|चाहिए|सकता|सकती|सकते|गया|गई|गए|लिया|दिया|किया|रहा|रही|रहे|पड़ता|पड़ती|पड़ते|होगी|होगा|करते|करता|करती|देखनी|देखना|देखने)$/i;
+
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
+    const text = (seg.originalText || seg.text || '').trim();
+    if (!text) continue;
+
     if (currentGroup.texts.length === 0) {
       currentGroup.startTime = seg.start;
     }
-    currentGroup.texts.push(seg.originalText || seg.text);
-    currentGroup.segmentIndices.push(i);
-    currentGroup.endTime = seg.start + seg.duration;
+    currentGroup.texts.push(text);
+    currentGroup.endTime = seg.start + (seg.duration || 2);
 
     const combinedText = currentGroup.texts.join(' ');
     const wordCount = combinedText.split(/\s+/).length;
-    const endsWithPunctuation = /[.?!।|]$/.test(seg.text.trim());
 
-    if (endsWithPunctuation || wordCount >= maxWordsPerSentence || i === segments.length - 1) {
+    // Check if the current chunk ends with strong punctuation
+    const hasPunctuation = /[.?!।|\n]$/.test(text);
+    const endsWithDangling = danglingEndRegex.test(text.replace(/[.?!।|]$/, '').trim());
+    const endsWithHindiVerb = hindiSentenceEndRegex.test(text.replace(/[.?!।|]$/, '').trim());
+
+    let shouldSplit = false;
+
+    if (i === segments.length - 1) {
+      // End of transcript
+      shouldSplit = true;
+    } else if (hasPunctuation) {
+      // Real punctuation found: split unless it's too short (e.g. < 6 words) and not at end
+      if (wordCount >= 6 || i === segments.length - 1) {
+        shouldSplit = true;
+      }
+    } else if (wordCount >= 20 && !endsWithDangling && (endsWithHindiVerb || wordCount >= 32)) {
+      // Natural clause boundary reached and not dangling
+      shouldSplit = true;
+    }
+
+    if (shouldSplit) {
       groups.push({
         sentence: combinedText,
-        segmentIndices: [...currentGroup.segmentIndices],
-        startTime: currentGroup.startTime,
-        endTime: currentGroup.endTime,
+        startTime: Math.round(currentGroup.startTime * 100) / 100,
+        endTime: Math.round(currentGroup.endTime * 100) / 100,
       });
-      currentGroup = { texts: [], segmentIndices: [], startTime: 0, endTime: 0 };
+      currentGroup = { texts: [], startTime: 0, endTime: 0 };
+    }
+  }
+
+  // If any dangling text remains
+  if (currentGroup.texts.length > 0) {
+    if (groups.length > 0) {
+      const last = groups[groups.length - 1];
+      last.sentence += ' ' + currentGroup.texts.join(' ');
+      last.endTime = Math.round(currentGroup.endTime * 100) / 100;
+    } else {
+      groups.push({
+        sentence: currentGroup.texts.join(' '),
+        startTime: Math.round(currentGroup.startTime * 100) / 100,
+        endTime: Math.round(currentGroup.endTime * 100) / 100,
+      });
     }
   }
 
@@ -382,10 +423,11 @@ ${inputLines}`;
 
   return translatedSegments;
 }
+
 /**
- * 1-to-1 Synchronized Authentic Subtitle Translation Engine
- * Translates every single subtitle line with 100% accuracy and zero dropped words.
- * Guarantees that no line is left in the original language or merged incorrectly.
+ * Contextual & Coherent Subtitle Translation Engine (கோர்வையான மொழிபெயர்ப்பு)
+ * Groups fragmented speech into full grammatical sentences before translation.
+ * Translates each full thought with complete context, preserving natural flow and meaning.
  */
 async function translateContextualSentences(segments, targetLang, sourceLang = 'auto') {
   if (!segments || segments.length === 0) return [];
@@ -393,31 +435,41 @@ async function translateContextualSentences(segments, targetLang, sourceLang = '
     return segments;
   }
 
-  const translatedSegments = segments.map(s => ({
-    ...s,
-    originalText: s.originalText || s.text,
-  }));
+  // 1. Group fragments into full coherent sentences
+  const groups = groupSubtitlesIntoSentences(segments);
 
-  const CONCURRENCY = 10;
-  let index = 0;
+  // 2. Translate complete sentences with concurrency and retry protection
+  const CONCURRENCY = 8;
+  let sIdx = 0;
+  const translatedSentences = new Array(groups.length);
 
   async function worker() {
-    while (index < translatedSegments.length) {
-      const current = index++;
-      const item = translatedSegments[current];
-      const textToTranslate = (item.originalText || item.text || '').trim();
+    while (sIdx < groups.length) {
+      const current = sIdx++;
+      const item = groups[current];
+      const sentenceText = item.sentence.trim();
 
-      if (!textToTranslate) continue;
+      if (!sentenceText) {
+        translatedSentences[current] = {
+          start: item.startTime,
+          duration: Math.max(1, Math.round((item.endTime - item.startTime) * 100) / 100),
+          text: '',
+          originalText: ''
+        };
+        continue;
+      }
 
       let translatedText = '';
-      for (let attempt = 0; attempt < 2; attempt++) {
+      const clients = ['dict-chrome-ex', 'gtx'];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const client = clients[attempt % clients.length];
         try {
-          const gUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(textToTranslate)}`;
+          const gUrl = `https://translate.googleapis.com/translate_a/single?client=${client}&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(sentenceText)}`;
           const res = await fetch(gUrl, {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             },
-            signal: AbortSignal.timeout(5000),
+            signal: AbortSignal.timeout(6000),
           });
 
           if (res.ok) {
@@ -428,21 +480,24 @@ async function translateContextualSentences(segments, targetLang, sourceLang = '
               break;
             }
           }
-        } catch (e) {
-          // Retry
+        } catch (err) {
+          await new Promise(r => setTimeout(r, 150 * (attempt + 1)));
         }
       }
 
-      if (translatedText) {
-        translatedSegments[current].text = translatedText;
-      }
+      translatedSentences[current] = {
+        start: item.startTime,
+        duration: Math.max(1, Math.round((item.endTime - item.startTime) * 100) / 100),
+        text: translatedText || sentenceText,
+        originalText: sentenceText,
+      };
     }
   }
 
-  const workers = Array.from({ length: Math.min(CONCURRENCY, translatedSegments.length) }, () => worker());
+  const workers = Array.from({ length: Math.min(CONCURRENCY, groups.length) }, () => worker());
   await Promise.all(workers);
 
-  return translatedSegments;
+  return translatedSentences;
 }
 
 /**

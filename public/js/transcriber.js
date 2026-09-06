@@ -134,6 +134,9 @@ export class TranscriberService {
     this.activeLanguage = data.language || lang;
 
     // Cache the original and current transcript
+    if (data.isOriginal || !this.translationCache.has('orig')) {
+      this.translationCache.set('orig', data.transcript);
+    }
     this.translationCache.set(this.activeLanguage, data.transcript);
     return data;
   }
@@ -168,12 +171,16 @@ export class TranscriberService {
       return this.currentData;
     }
 
+    const baseSegments = this.translationCache.get('orig') ||
+                         this.translationCache.get(this.sourceLanguage) ||
+                         this.currentData.transcript;
+
     const apiKey = TranscriberService.getGeminiApiKey();
     const res = await fetch(AppConfig.apiUrl('/api/translate'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        segments: this.currentData.transcript,
+        segments: baseSegments,
         targetLang,
         sourceLang: this.sourceLanguage,
         videoId: this.currentVideoId,
