@@ -388,6 +388,87 @@ body {
   height: 100%;
 }
 
+/* =============================================
+   Live Subtitle Bar (synced below video)
+   ============================================= */
+.live-subtitle-bar {
+  margin-top: 10px;
+  background: rgba(8, 11, 22, 0.92);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: var(--radius-md);
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(99, 102, 241, 0.1) inset;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.live-subtitle-bar.has-content {
+  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: 0 4px 22px rgba(99, 102, 241, 0.2), 0 0 0 1px rgba(99, 102, 241, 0.18) inset;
+}
+
+.live-subtitle-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--primary-gradient);
+  border-radius: 3px 0 0 3px;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.live-subtitle-bar.has-content::before {
+  opacity: 1;
+}
+
+.subtitle-inner {
+  padding: 10px 18px 10px 22px;
+  text-align: center;
+  width: 100%;
+}
+
+.live-subtitle-text {
+  font-size: 1.02rem;
+  font-weight: 500;
+  line-height: 1.55;
+  color: var(--text-muted);
+  display: block;
+  transition: color 0.3s ease, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+  transform-origin: center;
+}
+
+.live-subtitle-bar.has-content .live-subtitle-text {
+  color: #f1f5f9;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-size: 1.05rem;
+}
+
+.live-subtitle-bar.subtitle-flash .live-subtitle-text {
+  animation: subtitlePop 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes subtitlePop {
+  0%   { opacity: 0.6; transform: translateY(4px); }
+  100% { opacity: 1;   transform: translateY(0); }
+}
+
+/* dual-language display in live bar */
+.live-subtitle-bar .live-sub-original {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-top: 3px;
+  font-style: italic;
+}
+
 .video-meta-box {
   margin-top: 14px;
   display: flex;

@@ -102,6 +102,10 @@ function cacheDOMElements() {
 
     // Toast
     toast: document.getElementById('toast'),
+
+    // Live Subtitle Bar
+    liveSubtitleBar: document.getElementById('live-subtitle-bar'),
+    liveSubtitleText: document.getElementById('live-subtitle-text'),
   };
 }
 
@@ -351,6 +355,13 @@ async function handleFetchVideo() {
     if (elements.transcriptList) {
       elements.transcriptList.innerHTML = '';
     }
+    // Reset live subtitle bar
+    if (elements.liveSubtitleBar) {
+      elements.liveSubtitleBar.classList.remove('has-content', 'subtitle-flash');
+      const inner = elements.liveSubtitleBar.querySelector('.subtitle-inner');
+      if (inner) inner.innerHTML = '<span class="live-subtitle-text" id="live-subtitle-text">▶ Play the video to see live subtitles here</span>';
+      elements.liveSubtitleText = elements.liveSubtitleBar.querySelector('#live-subtitle-text');
+    }
   }
 
   try {
@@ -389,6 +400,9 @@ async function handleFetchVideo() {
     renderTranscript();
     showToast(`Loaded ${state.transcript.length} authentic transcript lines!`, 'success');
 
+    // Pre-populate live subtitle bar with first line so it's visible immediately
+    refreshLiveSubtitleBarText();
+
     // 4. Initialize YouTube Player in background (does not block transcript)
     loadVideo('youtube-player-iframe', videoId, {
       onTimeUpdate: (status) => handlePlaybackTimeUpdate(status),
@@ -423,6 +437,10 @@ async function handleLanguageChange(langCode) {
     renderTranscript();
     renderLanguageOptions(elements.langSearchInput.value);
     showToast(`Translated authentically into ${targetLangObj.name}!`, 'success');
+
+    // ── Force-refresh live subtitle bar in the new language ──
+    // Clear the cached last text so it always re-renders
+    refreshLiveSubtitleBarText();
   } catch (err) {
     console.error('Translation error:', err);
     showToast(`Translation failed: ${err.message}`, 'error');
@@ -605,6 +623,80 @@ function handlePlaybackTimeUpdate({ currentTime, duration, isPlaying }) {
       if (state.autoScroll) {
         newRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
+    }
+
+    // ── Update Live Subtitle Bar ──
+    updateLiveSubtitleBar(foundIndex);
+  } else if (foundIndex !== -1 && foundIndex === state.activeIndex) {
+    // Same segment, but text may have changed (e.g. after language switch)
+    // Only update if bar text is stale
+    const bar = elements.liveSubtitleBar;
+    const inner = bar && bar.querySelector('.subtitle-inner span');
+    const currentText = state.transcript[foundIndex]?.text || '';
+    if (inner && inner.dataset.lastText !== currentText) {
+      updateLiveSubtitleBar(foundIndex);
+    }
+  }
+}
+
+function updateLiveSubtitleBar(index) {
+  const bar = elements.liveSubtitleBar;
+  if (!bar) return;
+
+  const item = state.transcript[index];
+  if (!item) return;
+
+  const newText = item.text || '';
+
+  // Always get a fresh reference to the span (DOM may have been rebuilt)
+  const span = bar.querySelector('.subtitle-inner span.live-subtitle-text');
+  if (!span) return;
+
+  // Only animate if text actually changed
+  if (span.dataset.lastText !== newText) {
+    span.dataset.lastText = newText;
+
+    // Reset animation
+    bar.classList.remove('subtitle-flash');
+    void bar.offsetWidth; // reflow
+    bar.classList.add('subtitle-flash');
+
+    // Build inner content
+    let html = `<span class="live-subtitle-text" id="live-subtitle-text" data-last-text="${escapeHtml(newText)}">${escapeHtml(newText)}</span>`;
+    if (state.dualSubtitleMode && item.originalText && item.originalText !== newText) {
+      html += `<span class="live-sub-original">${escapeHtml(item.originalText)}</span>`;
+    }
+
+    const inner = bar.querySelector('.subtitle-inner');
+    if (inner) inner.innerHTML = html;
+  }
+
+  bar.classList.toggle('has-content', newText.trim().length > 0);
+}
+
+/**
+ * Force-refresh the live subtitle bar with the current active index text.
+ * Called after language change so the bar immediately shows new language.
+ */
+function refreshLiveSubtitleBarText() {
+  const bar = elements.liveSubtitleBar;
+  if (!bar) return;
+
+  // Clear the cached lastText so updateLiveSubtitleBar will always re-render
+  const span = bar.querySelector('.subtitle-inner span.live-subtitle-text');
+  if (span) span.dataset.lastText = null;
+
+  // If there's a known active index, update bar immediately
+  if (state.activeIndex >= 0 && state.transcript[state.activeIndex]) {
+    updateLiveSubtitleBar(state.activeIndex);
+  } else if (state.transcript.length > 0) {
+    // Video may not have started yet — show first segment as a preview
+    const bar = elements.liveSubtitleBar;
+    const inner = bar && bar.querySelector('.subtitle-inner');
+    if (inner) {
+      const firstText = state.transcript[0]?.text || '';
+      inner.innerHTML = `<span class="live-subtitle-text" id="live-subtitle-text" data-last-text="">${escapeHtml(firstText)}</span>`;
+      bar.classList.toggle('has-content', firstText.trim().length > 0);
     }
   }
 }

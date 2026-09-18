@@ -431,15 +431,13 @@ ${inputLines}`;
  */
 async function translateContextualSentences(segments, targetLang, sourceLang = 'auto') {
   if (!segments || segments.length === 0) return [];
-  if (targetLang === sourceLang || (targetLang === 'en' && sourceLang === 'auto')) {
-    return segments;
-  }
+  if (targetLang === sourceLang) return segments;
 
   // 1. Group fragments into full coherent sentences
   const groups = groupSubtitlesIntoSentences(segments);
 
   // 2. Translate complete sentences with concurrency and retry protection
-  const CONCURRENCY = 8;
+  const CONCURRENCY = 6;
   let sIdx = 0;
   const translatedSentences = new Array(groups.length);
 
@@ -459,31 +457,7 @@ async function translateContextualSentences(segments, targetLang, sourceLang = '
         continue;
       }
 
-      let translatedText = '';
-      const clients = ['dict-chrome-ex', 'gtx'];
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const client = clients[attempt % clients.length];
-        try {
-          const gUrl = `https://translate.googleapis.com/translate_a/single?client=${client}&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(sentenceText)}`;
-          const res = await fetch(gUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            },
-            signal: AbortSignal.timeout(6000),
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            const resTrans = data?.[0]?.map(s => s[0] || '').join('').trim();
-            if (resTrans) {
-              translatedText = decodeHtmlEntities(resTrans);
-              break;
-            }
-          }
-        } catch (err) {
-          await new Promise(r => setTimeout(r, 150 * (attempt + 1)));
-        }
-      }
+      const translatedText = await translateSentenceWithAPIs(sentenceText, sourceLang, targetLang);
 
       translatedSentences[current] = {
         start: item.startTime,
@@ -498,6 +472,61 @@ async function translateContextualSentences(segments, targetLang, sourceLang = '
   await Promise.all(workers);
 
   return translatedSentences;
+}
+
+/**
+ * Multi-API translation helper:
+ * 1. MyMemory API  (cloud-friendly, free, no key needed)
+ * 2. Google Translate free  (fallback)
+ */
+async function translateSentenceWithAPIs(text, sourceLang, targetLang) {
+  const sl = (sourceLang === 'auto' || !sourceLang) ? 'en' : sourceLang;
+
+  // --- API 1: MyMemory (most reliable on cloud IPs) ---
+  try {
+    const mmUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sl}|${targetLang}`;
+    const mmRes = await fetch(mmUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (mmRes.ok) {
+      const mmData = await mmRes.json();
+      const translated = mmData?.responseData?.translatedText;
+      if (
+        translated &&
+        translated.trim().length > 0 &&
+        !translated.toUpperCase().includes('MYMEMORY WARNING') &&
+        mmData?.responseStatus === 200
+      ) {
+        return decodeHtmlEntities(translated.trim());
+      }
+    }
+  } catch (mmErr) {
+    console.warn('[MyMemory] Failed:', mmErr.message);
+  }
+
+  // --- API 2: Google Translate free (fallback) ---
+  for (const client of ['dict-chrome-ex', 'gtx']) {
+    try {
+      const gUrl = `https://translate.googleapis.com/translate_a/single?client=${client}&sl=${sl}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+      const gRes = await fetch(gUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+        },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (gRes.ok) {
+        const gData = await gRes.json();
+        const resTrans = gData?.[0]?.map(s => s[0] || '').join('').trim();
+        if (resTrans) return decodeHtmlEntities(resTrans);
+      }
+    } catch (gErr) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  // All APIs failed — return null so caller can use original
+  return null;
 }
 
 /**
@@ -788,7 +817,10 @@ app.get('/api/transcript', async (req, res) => {
 
     // Step 2: Fallback to YoutubeTranscript library across detected & default languages
     if (!transcript || transcript.length === 0) {
-      const tryLangs = [requestedLang, guessedAudioLang, detectedSourceLang, 'ta', 'hi', 'ml', 'en', undefined].filter(Boolean);
+      // Build a deduplicated list from actual detected/requested values — no hardcoded languages
+      const tryLangs = [...new Set(
+        [requestedLang, guessedAudioLang, detectedSourceLang, 'en'].filter(Boolean)
+      )];
       for (const tLang of tryLangs) {
         try {
           const raw = await YoutubeTranscript.fetchTranscript(videoId, tLang ? { lang: tLang } : undefined);
