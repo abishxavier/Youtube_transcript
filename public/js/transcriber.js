@@ -83,6 +83,16 @@ export class TranscriberService {
   }
 
   /**
+   * Get user-configured OpenAI API Key for Whisper transcription
+   */
+  static getOpenAiApiKey() {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('OPENAI_API_KEY') || '';
+    }
+    return '';
+  }
+
+  /**
    * Get preferred target language (defaults to 'auto' for original audio)
    */
   static getPreferredLanguage() {
@@ -125,6 +135,7 @@ export class TranscriberService {
     this.activeLanguage = lang;
 
     const apiKey = TranscriberService.getGeminiApiKey();
+    const openaiKey = TranscriberService.getOpenAiApiKey();
     const queryParams = new URLSearchParams({
       v: videoId,
       lang: lang || 'auto',
@@ -134,11 +145,16 @@ export class TranscriberService {
     if (apiKey) {
       queryParams.append('apiKey', apiKey);
     }
+    if (openaiKey) {
+      queryParams.append('openaiKey', openaiKey);
+    }
 
     const res = await fetch(AppConfig.apiUrl(`/api/transcript?${queryParams.toString()}`));
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Could not fetch transcript for this video');
+      const errBody = await res.json();
+      const err = new Error(errBody.error || errBody.message || 'Could not fetch transcript for this video');
+      err._body = errBody;
+      throw err;
     }
 
     const data = await res.json();

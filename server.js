@@ -4,6 +4,11 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import ytdl from '@distube/ytdl-core';
+import OpenAI from 'openai';
+import { createReadStream, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -552,6 +557,83 @@ async function performAuthenticTranslation(segments, targetLang, sourceLang, mod
   return await translateContextualSentences(segments, targetLang, sourceLang);
 }
 
+/**
+ * Whisper AI Audio Transcription
+ * Downloads YouTube audio and transcribes it using OpenAI Whisper.
+ * Called ONLY when no captions are available on the video.
+ */
+async function transcribeAudioWithWhisper(videoId, openaiApiKey) {
+  const activeKey = openaiApiKey || process.env.OPENAI_API_KEY;
+  if (!activeKey) {
+    throw new Error('NO_OPENAI_KEY');
+  }
+
+  const openai = new OpenAI({ apiKey: activeKey });
+  const tmpFile = join(tmpdir(), `yt_audio_${videoId}_${Date.now()}.mp3`);
+
+  try {
+    // Step 1: Get audio stream from YouTube using ytdl-core
+    console.log(`[Whisper] Downloading audio for ${videoId}...`);
+
+    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`, {
+      requestOptions: {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+        }
+      }
+    });
+
+    // Pick the best audio-only format ≤ 25MB (Whisper API file limit)
+    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+    const audioFormat = audioFormats.find(f => f.container === 'mp4' || f.container === 'webm') || audioFormats[0];
+
+    if (!audioFormat) {
+      throw new Error('No audio stream available for this video.');
+    }
+
+    // Download audio into a temp file
+    await new Promise((resolve, reject) => {
+      const stream = ytdl.downloadFromInfo(info, { format: audioFormat });
+      const chunks = [];
+      stream.on('data', chunk => chunks.push(chunk));
+      stream.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        // Whisper limit is 25MB — trim if necessary
+        const MAX_BYTES = 24 * 1024 * 1024;
+        writeFileSync(tmpFile, buffer.length > MAX_BYTES ? buffer.slice(0, MAX_BYTES) : buffer);
+        resolve();
+      });
+      stream.on('error', reject);
+    });
+
+    console.log(`[Whisper] Audio downloaded. Sending to Whisper API...`);
+
+    // Step 2: Transcribe with Whisper (word-level timestamps)
+    const whisperResp = await openai.audio.transcriptions.create({
+      file: createReadStream(tmpFile),
+      model: 'whisper-1',
+      response_format: 'verbose_json',
+      timestamp_granularities: ['segment'],
+    });
+
+    // Step 3: Convert Whisper segments to our standard format
+    const segments = (whisperResp.segments || []).map(seg => ({
+      text: decodeHtmlEntities(seg.text.trim()),
+      start: Math.round(seg.start * 100) / 100,
+      duration: Math.round((seg.end - seg.start) * 100) / 100,
+    })).filter(s => s.text.length > 0);
+
+    console.log(`[Whisper] Transcribed ${segments.length} segments for ${videoId}.`);
+    return {
+      segments,
+      detectedLanguage: whisperResp.language || 'en',
+    };
+  } finally {
+    // Always clean up temp file
+    try { if (existsSync(tmpFile)) unlinkSync(tmpFile); } catch (_) {}
+  }
+}
+
 // ----------------------------------------------------
 // API ROUTES
 // ----------------------------------------------------
@@ -747,6 +829,7 @@ app.get('/api/transcript', async (req, res) => {
     let transcript = null;
     let detectedSourceLang = 'en';
     let availableTracks = [];
+    let usedWhisper = false;
 
     // Pre-fetch video metadata for accurate language identification
     const videoInfo = await fetchVideoInfo(videoId).catch(() => ({
@@ -839,10 +922,46 @@ app.get('/api/transcript', async (req, res) => {
       }
     }
 
-    // If still no transcript found
+    // Step 3: Whisper AI Audio Transcription Fallback (when no captions exist)
+    if (!transcript || transcript.length === 0) {
+      const openaiKey = req.query.openaiKey || process.env.OPENAI_API_KEY;
+
+      if (!openaiKey) {
+        return res.status(404).json({
+          error: 'NO_CAPTIONS_NO_KEY',
+          message: 'This video has no captions. Add your OpenAI API key in Settings to enable AI audio transcription for any video.',
+          videoId,
+          requiresOpenAiKey: true,
+        });
+      }
+
+      try {
+        console.log(`[Whisper] No captions for ${videoId}. Falling back to Whisper AI...`);
+        const whisperResult = await transcribeAudioWithWhisper(videoId, openaiKey);
+        transcript = whisperResult.segments;
+        detectedSourceLang = whisperResult.detectedLanguage || guessedAudioLang || 'en';
+        usedWhisper = true;
+        console.log(`[Whisper] Got ${transcript.length} segments. Language: ${detectedSourceLang}`);
+      } catch (whisperErr) {
+        if (whisperErr.message === 'NO_OPENAI_KEY') {
+          return res.status(404).json({
+            error: 'NO_CAPTIONS_NO_KEY',
+            message: 'This video has no captions. Add your OpenAI API key in Settings to enable AI audio transcription for any video.',
+            videoId,
+            requiresOpenAiKey: true,
+          });
+        }
+        return res.status(500).json({
+          error: `Audio transcription failed: ${whisperErr.message}`,
+          videoId,
+        });
+      }
+    }
+
+    // If still no transcript after all fallbacks
     if (!transcript || transcript.length === 0) {
       return res.status(404).json({
-        error: 'No captions or subtitles could be found for this video. The creator may not have enabled subtitles.',
+        error: 'Could not transcribe this video. Please try a different video.',
         videoId,
       });
     }
@@ -882,6 +1001,7 @@ app.get('/api/transcript', async (req, res) => {
       availableTracks,
       totalSegments: finalTranscript.length,
       transcript: finalTranscript,
+      transcriptionMethod: usedWhisper ? 'whisper' : (availableTracks.length > 0 ? 'captions' : 'library'),
     };
 
     if (transcriptCache.size > 500) {

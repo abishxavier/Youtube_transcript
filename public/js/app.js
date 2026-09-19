@@ -70,7 +70,9 @@ function cacheDOMElements() {
     closeSettingsModalBtn: document.getElementById('close-settings-modal'),
     prefLangSelect: document.getElementById('pref-lang-select'),
     geminiApiKeyInput: document.getElementById('gemini-api-key-input'),
+    openaiApiKeyInput: document.getElementById('openai-api-key-input'),
     saveSettingsBtn: document.getElementById('save-settings-btn'),
+    loadingText: document.getElementById('loading-text'),
 
     // Dual Subtitle, Reading Mode & Auto-scroll Toggles
     dualSubToggle: document.getElementById('dual-sub-toggle'),
@@ -117,6 +119,10 @@ function initSettings() {
   const geminiKey = TranscriberService.getGeminiApiKey();
   if (elements.geminiApiKeyInput) {
     elements.geminiApiKeyInput.value = geminiKey || '';
+  }
+  const openaiKey = TranscriberService.getOpenAiApiKey();
+  if (elements.openaiApiKeyInput) {
+    elements.openaiApiKeyInput.value = openaiKey || '';
   }
 }
 
@@ -183,12 +189,15 @@ function bindEvents() {
   if (elements.saveSettingsBtn) {
     elements.saveSettingsBtn.addEventListener('click', () => {
       const pref = elements.prefLangSelect.value;
-      const key = elements.geminiApiKeyInput.value.trim();
+      const geminiKey = elements.geminiApiKeyInput.value.trim();
+      const openaiKey = elements.openaiApiKeyInput ? elements.openaiApiKeyInput.value.trim() : '';
       localStorage.setItem('PREFERRED_LANGUAGE', pref);
-      localStorage.setItem('GEMINI_API_KEY', key);
+      localStorage.setItem('GEMINI_API_KEY', geminiKey);
+      if (openaiKey) localStorage.setItem('OPENAI_API_KEY', openaiKey);
+      else localStorage.removeItem('OPENAI_API_KEY');
 
       elements.settingsModal.classList.remove('active');
-      showToast('Settings saved successfully!', 'success');
+      showToast('Settings saved! OpenAI key enables Whisper transcription for any video.', 'success');
 
       // If video is loaded and user changed preference, translate
       if (state.currentVideoId) {
@@ -344,7 +353,11 @@ async function handleFetchVideo() {
     return;
   }
 
-  showLoading(true, 'Extracting authentic audio captions...');
+  // Smart loading message: hint about Whisper if an OpenAI key is configured
+  const hasOpenAiKey = !!TranscriberService.getOpenAiApiKey();
+  showLoading(true, hasOpenAiKey
+    ? 'Fetching transcript... (Whisper AI ready for captionless videos)'
+    : 'Fetching video transcript...');
   hideStatusAlert();
 
   // Instantly clear old video transcript from UI to prevent stale data
@@ -364,6 +377,15 @@ async function handleFetchVideo() {
     }
   }
 
+  // Progressive loading message: if the request takes >6s (Whisper jobs take 5–30s),
+  // update the spinner text so the user knows AI transcription is in progress.
+  let whisperMsgTimer = null;
+  if (hasOpenAiKey) {
+    whisperMsgTimer = setTimeout(() => {
+      showLoading(true, '🎙️ Transcribing audio with Whisper AI... (may take 10–30s for long videos)');
+    }, 6000);
+  }
+
   try {
     const preferredLang = TranscriberService.getPreferredLanguage();
 
@@ -372,6 +394,8 @@ async function handleFetchVideo() {
       transcriber.fetchTranscript(videoId, preferredLang),
       transcriber.fetchVideoInfo(videoId).catch(() => ({ title: 'YouTube Video', author: 'YouTube Creator' })),
     ]);
+
+    clearTimeout(whisperMsgTimer);
 
     state.currentVideoId = videoId;
     state.videoInfo = videoInfo;
@@ -388,17 +412,30 @@ async function handleFetchVideo() {
     elements.videoAuthor.textContent = videoInfo.author ? `by ${videoInfo.author}` : '';
     elements.segmentCountBadge.textContent = `${state.transcript.length} lines`;
 
-    // 3. Update Audio Language Badges
+    // 3. Update Audio Language Badges & transcription method
     const srcLangObj = getLanguageByCode(state.sourceLanguage);
     if (elements.detectedAudioBadge) {
       elements.detectedAudioBadge.textContent = `🎙️ Audio: ${srcLangObj.flag} ${srcLangObj.name}`;
       elements.detectedAudioBadge.title = `Original spoken audio in video is ${srcLangObj.name}`;
     }
 
-    updateModeBadge();
+    // Show Whisper badge if AI transcription was used
+    if (transcriptData.transcriptionMethod === 'whisper') {
+      if (elements.transModeBadge) {
+        elements.transModeBadge.style.display = 'inline-block';
+        elements.transModeBadge.textContent = '🎙️ Whisper AI';
+        elements.transModeBadge.className = 'badge badge-accent';
+        elements.transModeBadge.title = 'This video had no captions — transcribed from audio using OpenAI Whisper AI';
+      }
+      showToast('🎙️ No captions found — transcribed from audio using Whisper AI!', 'success');
+    }
+
+    updateModeBadge(transcriptData.transcriptionMethod);
     updateSelectedLanguageDisplay(state.activeLanguage);
     renderTranscript();
-    showToast(`Loaded ${state.transcript.length} authentic transcript lines!`, 'success');
+    if (transcriptData.transcriptionMethod !== 'whisper') {
+      showToast(`Loaded ${state.transcript.length} authentic transcript lines!`, 'success');
+    }
 
     // Pre-populate live subtitle bar with first line so it's visible immediately
     refreshLiveSubtitleBarText();
@@ -409,11 +446,21 @@ async function handleFetchVideo() {
       onReady: () => console.log('Player ready'),
     }).catch(playerErr => console.warn('Player load error:', playerErr));
   } catch (err) {
+    clearTimeout(whisperMsgTimer);
     console.error('Error fetching video transcript:', err);
-    showStatusAlert(
-      err.message || 'Could not load transcript for this video. Make sure subtitles are available on this video.',
-      'error'
-    );
+    const errBody = err._body || {};
+    if (errBody.requiresOpenAiKey || (err.message && err.message.includes('NO_CAPTIONS_NO_KEY'))) {
+      showStatusAlert(
+        'This video has no captions. Add your <strong>OpenAI API key</strong> in <a href="#" id="open-settings-from-error" style="color:var(--primary-glow);text-decoration:underline;">Settings ⚙️</a> to transcribe any video using Whisper AI.',
+        'warning'
+      );
+      setTimeout(() => {
+        const link = document.getElementById('open-settings-from-error');
+        if (link) link.addEventListener('click', (e) => { e.preventDefault(); initSettings(); elements.settingsModal.classList.add('active'); });
+      }, 100);
+    } else {
+      showStatusAlert(err.message || 'Could not load transcript for this video.', 'error');
+    }
   } finally {
     showLoading(false);
   }
@@ -449,8 +496,11 @@ async function handleLanguageChange(langCode) {
   }
 }
 
-function updateModeBadge() {
+function updateModeBadge(transcriptionMethod) {
   if (!elements.transModeBadge) return;
+
+  // If Whisper already set the badge, don't overwrite it
+  if (transcriptionMethod === 'whisper') return;
 
   if (state.isOriginal || state.activeLanguage === state.sourceLanguage || state.activeLanguage === 'auto') {
     elements.transModeBadge.style.display = 'inline-block';

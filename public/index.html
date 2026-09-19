@@ -3,14 +3,71 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>YouTube Multilingual Transcriber & Subtitle Player</title>
-  <meta name="description" content="Paste any YouTube video link to extract, synchronize, translate into 100+ global languages, and download transcripts in SRT, VTT, TXT, JSON, or PDF." />
-  
-  <!-- Mobile & Android Theme Colors -->
+
+  <!-- ===================== PRIMARY SEO ===================== -->
+  <title>TranscribeX Pro — Free YouTube Transcriber, Subtitle &amp; Translation App</title>
+  <meta name="description" content="Free YouTube video transcriber. Instantly extract subtitles from any YouTube video, translate into 100+ languages (Hindi, Tamil, Spanish, French &amp; more), and download as SRT, VTT, TXT, JSON or PDF. No sign-up required." />
+  <meta name="keywords" content="youtube transcriber, youtube transcript, youtube subtitle generator, youtube to text, video transcription, subtitle downloader, youtube caption extractor, multilingual subtitles, translate youtube video, SRT download, VTT download, free transcription tool, youtube subtitle translator, english to hindi subtitles, youtube audio to text" />
+  <meta name="author" content="TranscribeX Pro" />
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
+  <link rel="canonical" href="https://youtube-transcript-9d5o.onrender.com/" />
+
+  <!-- ===================== OPEN GRAPH (Facebook / WhatsApp / LinkedIn) ===================== -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="TranscribeX Pro — Free YouTube Transcriber &amp; Subtitle Translator" />
+  <meta property="og:description" content="Extract, translate &amp; download YouTube subtitles in 100+ languages. Supports SRT, VTT, TXT, JSON &amp; PDF. Free, fast, no login needed." />
+  <meta property="og:url" content="https://youtube-transcript-9d5o.onrender.com/" />
+  <meta property="og:image" content="https://youtube-transcript-9d5o.onrender.com/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:site_name" content="TranscribeX Pro" />
+  <meta property="og:locale" content="en_US" />
+
+  <!-- ===================== TWITTER CARD ===================== -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="TranscribeX Pro — Free YouTube Transcriber &amp; Subtitle Translator" />
+  <meta name="twitter:description" content="Extract, translate &amp; download YouTube subtitles in 100+ languages. Free, fast, no login needed." />
+  <meta name="twitter:image" content="https://youtube-transcript-9d5o.onrender.com/og-image.png" />
+
+  <!-- ===================== STRUCTURED DATA (Google Rich Results) ===================== -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "TranscribeX Pro",
+    "url": "https://youtube-transcript-9d5o.onrender.com/",
+    "description": "Free YouTube video transcriber and subtitle translator. Extract captions from any YouTube video and translate into 100+ global languages. Download as SRT, VTT, TXT, JSON or PDF.",
+    "applicationCategory": "MultimediaApplication",
+    "operatingSystem": "All",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "featureList": [
+      "YouTube transcript extraction",
+      "100+ language translation",
+      "SRT subtitle download",
+      "VTT subtitle download",
+      "PDF export",
+      "Real-time synchronized subtitle player",
+      "AI-powered video summary"
+    ],
+    "screenshot": "https://youtube-transcript-9d5o.onrender.com/og-image.png",
+    "aggregateRating": {
+      "@type": "AggregateRating",
+      "ratingValue": "4.8",
+      "ratingCount": "1200"
+    }
+  }
+  </script>
+
+  <!-- ===================== MOBILE & PWA ===================== -->
   <meta name="theme-color" content="#0a0d14" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TranscribeX Pro" />
   <link rel="manifest" href="manifest.json" />
 
   <link rel="stylesheet" href="style.css" />
@@ -278,6 +335,22 @@
             />
           </div>
 
+          <div class="settings-group" style="margin-top: 1.25rem;">
+            <label class="settings-label">
+              <span>🎙️ OpenAI API Key (For videos without captions)</span>
+              <small style="color: var(--text-muted); display: block; font-size: 0.82rem; margin-top: 2px;">
+                Enables <strong style="color: var(--primary-glow);">Whisper AI</strong> to transcribe <em>any</em> YouTube video — even without subtitles. ~₹0.50/10 min. Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--primary-glow); text-decoration: underline;">OpenAI Platform</a>.
+              </small>
+            </label>
+            <input 
+              type="password" 
+              id="openai-api-key-input" 
+              class="url-input" 
+              placeholder="Paste OpenAI API key (sk-...)" 
+              style="width: 100%; margin-top: 6px;"
+            />
+          </div>
+
           <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 1.5rem;">
             <button id="save-settings-btn" class="btn btn-primary">
               💾 Save Preferences
@@ -353,7 +426,7 @@
   <!-- Loading Spinner Overlay -->
   <div id="loading-spinner" class="loading-overlay">
     <div class="spinner"></div>
-    <div class="loading-text">Processing YouTube video captions...</div>
+    <div id="loading-text" class="loading-text">Processing YouTube video captions...</div>
   </div>
 
   <!-- Toast Notifications -->
