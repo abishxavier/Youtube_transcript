@@ -197,7 +197,7 @@ function bindEvents() {
       else localStorage.removeItem('OPENAI_API_KEY');
 
       elements.settingsModal.classList.remove('active');
-      showToast('Settings saved! OpenAI key enables Whisper transcription for any video.', 'success');
+      showToast('Settings saved! Free Whisper AI enabled for captionless videos.', 'success');
 
       // If video is loaded and user changed preference, translate
       if (state.currentVideoId) {
@@ -423,11 +423,11 @@ async function handleFetchVideo() {
     if (transcriptData.transcriptionMethod === 'whisper') {
       if (elements.transModeBadge) {
         elements.transModeBadge.style.display = 'inline-block';
-        elements.transModeBadge.textContent = '🎙️ Whisper AI';
+        elements.transModeBadge.textContent = '🎙️ Free Whisper AI';
         elements.transModeBadge.className = 'badge badge-accent';
-        elements.transModeBadge.title = 'This video had no captions — transcribed from audio using OpenAI Whisper AI';
+        elements.transModeBadge.title = 'Transcribed directly from audio using Whisper Large V3 AI';
       }
-      showToast('🎙️ No captions found — transcribed from audio using Whisper AI!', 'success');
+      showToast('🎙️ Transcribed from audio using Free Whisper AI!', 'success');
     }
 
     updateModeBadge(transcriptData.transcriptionMethod);
@@ -451,7 +451,7 @@ async function handleFetchVideo() {
     const errBody = err._body || {};
     if (errBody.requiresOpenAiKey || (err.message && err.message.includes('NO_CAPTIONS_NO_KEY'))) {
       showStatusAlert(
-        'This video has no captions. Add your <strong>OpenAI API key</strong> in <a href="#" id="open-settings-from-error" style="color:var(--primary-glow);text-decoration:underline;">Settings ⚙️</a> to transcribe any video using Whisper AI.',
+        'This video has no captions. Add your <strong>free Groq API key</strong> in <a href="#" id="open-settings-from-error" style="color:var(--primary-glow);text-decoration:underline;">Settings ⚙️</a> to transcribe any video using Whisper Large V3 for free.',
         'warning'
       );
       setTimeout(() => {
