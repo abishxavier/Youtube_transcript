@@ -581,9 +581,11 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
     console.log(`[Whisper] Downloading audio for ${videoId} using yt-dlp...`);
     try {
       await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
-        format: 'ba/b[ext=m4a]/best',
+        format: 'ba[abr<=64]/ba[ext=m4a]/ba/best',
         output: tmpFile,
         noPlaylist: true,
+        jsRuntimes: 'node',
+        extractorArgs: 'youtube:player_client=android',
       });
     } catch (dlErr) {
       console.warn(`[Whisper] yt-dlp direct failed (${dlErr.message}), trying ytdl-core fallback...`);
