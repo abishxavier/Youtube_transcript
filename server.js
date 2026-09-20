@@ -634,6 +634,7 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
         output: tmpFile,
         noPlaylist: true,
         noCacheDir: true,
+        noProxy: true, // Bypass proxy for media downloads to preserve Webshare bandwidth
         maxFilesize: '24M',
         extractorArgs: 'youtube:player_client=android',
       });
