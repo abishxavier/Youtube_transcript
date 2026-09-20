@@ -7,7 +7,7 @@ import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import ytdl from '@distube/ytdl-core';
 import youtubedl from 'youtube-dl-exec';
 import OpenAI from 'openai';
-import { createReadStream, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { createReadStream, createWriteStream, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -65,9 +65,39 @@ async function fetchYouTube(url, options = {}) {
   return fetch(url, options);
 }
 
-// In-memory cache for transcripts & translations to minimize API load & boost speed
+// In-memory cache capped to 40 items to strictly protect Render's 512MB RAM limit
+const MAX_CACHE_ITEMS = 40;
 const transcriptCache = new Map();
 const videoInfoCache = new Map();
+
+function setBoundedCache(cache, key, value) {
+  if (cache.size >= MAX_CACHE_ITEMS) {
+    const oldestKey = cache.keys().next().value;
+    cache.delete(oldestKey);
+  }
+  cache.set(key, value);
+}
+
+// Concurrency mutex: run max 1 Whisper audio processing job at a time to prevent RAM spikes
+let isWhisperActive = false;
+const whisperQueue = [];
+
+async function acquireWhisperLock() {
+  if (!isWhisperActive) {
+    isWhisperActive = true;
+    return;
+  }
+  await new Promise(resolve => whisperQueue.push(resolve));
+}
+
+function releaseWhisperLock() {
+  if (whisperQueue.length > 0) {
+    const next = whisperQueue.shift();
+    next();
+  } else {
+    isWhisperActive = false;
+  }
+}
 
 /**
  * Extract YouTube Video ID from any URL format
@@ -108,7 +138,7 @@ async function fetchVideoInfo(videoId) {
         thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
         videoId,
       };
-      videoInfoCache.set(videoId, info);
+      setBoundedCache(videoInfoCache, videoId, info);
       return info;
     }
   } catch (err) {
@@ -585,6 +615,9 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
     throw new Error('NO_AI_KEY');
   }
 
+  // Queue to ensure only 1 audio download/whisper job runs at once
+  await acquireWhisperLock();
+
   const isGroq = activeKey.startsWith('gsk_') || activeKey === process.env.GROQ_API_KEY;
   const client = new OpenAI({
     apiKey: activeKey,
@@ -594,36 +627,36 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
   const tmpFile = join(tmpdir(), `yt_audio_${videoId}_${Date.now()}.m4a`);
 
   try {
-    console.log(`[Whisper] Downloading audio for ${videoId} using yt-dlp...`);
+    console.log(`[Whisper] Downloading audio for ${videoId} using yt-dlp (memory-optimized)...`);
     try {
       await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
-        format: 'ba[abr<=64]/ba[ext=m4a]/ba/best',
+        format: 'ba[abr<=48]/ba[abr<=64]/ba/best',
         output: tmpFile,
         noPlaylist: true,
-        jsRuntimes: 'node',
+        noCacheDir: true,
+        maxFilesize: '24M',
         extractorArgs: 'youtube:player_client=android',
       });
     } catch (dlErr) {
-      console.warn(`[Whisper] yt-dlp direct failed (${dlErr.message}), trying ytdl-core fallback...`);
+      console.warn(`[Whisper] yt-dlp direct failed (${dlErr.message}), trying streaming ytdl-core fallback...`);
       const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`).catch(() => null);
       if (!info) throw dlErr;
       const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
       const audioFormat = audioFormats.find(f => f.container === 'mp4' || f.container === 'webm') || audioFormats[0];
       if (!audioFormat) throw dlErr;
 
+      // Stream directly to file on disk to prevent RAM accumulation
       await new Promise((resolve, reject) => {
         const stream = ytdl.downloadFromInfo(info, { format: audioFormat });
-        const chunks = [];
-        stream.on('data', chunk => chunks.push(chunk));
-        stream.on('end', () => {
-          writeFileSync(tmpFile, Buffer.concat(chunks));
-          resolve();
-        });
+        const fileOut = createWriteStream(tmpFile);
+        stream.pipe(fileOut);
+        fileOut.on('finish', resolve);
+        fileOut.on('error', reject);
         stream.on('error', reject);
       });
     }
 
-    console.log(`[Whisper] Audio downloaded. Sending to ${isGroq ? 'Groq Whisper Large V3 (Free)' : 'OpenAI Whisper'}...`);
+    console.log(`[Whisper] Audio ready. Sending to ${isGroq ? 'Groq Whisper Large V3' : 'OpenAI Whisper'}...`);
 
     const whisperOptions = {
       file: createReadStream(tmpFile),
@@ -648,6 +681,7 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
       detectedLanguage: whisperResp.language || 'en',
     };
   } finally {
+    releaseWhisperLock();
     try { if (existsSync(tmpFile)) unlinkSync(tmpFile); } catch (_) {}
   }
 }
@@ -1037,11 +1071,7 @@ app.get('/api/transcript', async (req, res) => {
       transcriptionMethod: usedWhisper ? 'whisper' : (availableTracks.length > 0 ? 'captions' : 'library'),
     };
 
-    if (transcriptCache.size > 500) {
-      const firstKey = transcriptCache.keys().next().value;
-      transcriptCache.delete(firstKey);
-    }
-    transcriptCache.set(cacheKey, payload);
+    setBoundedCache(transcriptCache, cacheKey, payload);
 
     return res.json(payload);
   } catch (err) {
