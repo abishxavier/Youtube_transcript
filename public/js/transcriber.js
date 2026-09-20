@@ -103,15 +103,43 @@ export class TranscriberService {
   }
 
   /**
+   * Safe JSON response parser that prevents "Unexpected end of JSON input" errors
+   */
+  static async safeParseResponse(res) {
+    try {
+      const text = await res.text();
+      if (!text || !text.trim()) {
+        return { data: null, error: `Server error (${res.status}: ${res.statusText || 'No response body'})` };
+      }
+      try {
+        const json = JSON.parse(text);
+        return { data: json, error: null };
+      } catch (_) {
+        const isHtml = text.includes('<!DOCTYPE') || text.includes('<html');
+        return { 
+          data: null, 
+          error: isHtml 
+            ? `Server error (${res.status}). The video may be unavailable or processing timed out.` 
+            : text.slice(0, 200) 
+        };
+      }
+    } catch (readErr) {
+      return { data: null, error: `Connection failed: ${readErr.message}` };
+    }
+  }
+
+  /**
    * Fetch Video Metadata
    */
   async fetchVideoInfo(videoId) {
-    const res = await fetch(AppConfig.apiUrl(`/api/video-info?v=${videoId}`));
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to fetch video info');
-    }
-    return await res.json();
+    try {
+      const res = await fetch(AppConfig.apiUrl(`/api/video-info?v=${videoId}`));
+      const { data } = await TranscriberService.safeParseResponse(res);
+      if (res.ok && data && !data.error) {
+        return data;
+      }
+    } catch (_) {}
+    return { title: 'YouTube Video', author: 'YouTube Creator', videoId };
   }
 
   /**
@@ -150,14 +178,15 @@ export class TranscriberService {
     }
 
     const res = await fetch(AppConfig.apiUrl(`/api/transcript?${queryParams.toString()}`));
-    if (!res.ok) {
-      const errBody = await res.json();
-      const err = new Error(errBody.error || errBody.message || 'Could not fetch transcript for this video');
-      err._body = errBody;
+    const { data, error: parseErr } = await TranscriberService.safeParseResponse(res);
+
+    if (!res.ok || !data) {
+      const errMessage = (data && (data.error || data.message)) || parseErr || 'Could not fetch transcript for this video';
+      const err = new Error(errMessage);
+      err._body = data || {};
       throw err;
     }
 
-    const data = await res.json();
     this.currentData = data;
     this.sourceLanguage = data.sourceLanguage || 'en';
     this.activeLanguage = data.language || lang;

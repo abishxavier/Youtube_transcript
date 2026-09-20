@@ -152,12 +152,21 @@ async function fetchInnerTubeCaptionTracks(videoId) {
 
     if (resp.ok) {
       const data = await resp.json();
+      const playability = data?.playabilityStatus;
+      if (playability && (playability.status === 'ERROR' || playability.status === 'LOGIN_REQUIRED')) {
+        const reason = playability.reason || 'This video is unavailable';
+        const unavailErr = new Error(`VIDEO_UNAVAILABLE: ${reason}`);
+        unavailErr.isUnavailable = true;
+        unavailErr.reason = reason;
+        throw unavailErr;
+      }
       const captionTracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
       if (Array.isArray(captionTracks) && captionTracks.length > 0) {
         return captionTracks;
       }
     }
   } catch (err) {
+    if (err.isUnavailable) throw err;
     console.warn(`InnerTube caption fetch error for ${videoId}:`, err.message);
   }
   return null;
@@ -860,7 +869,17 @@ app.get('/api/transcript', async (req, res) => {
     const guessedAudioLang = detectLanguageFromMetadata(metaTitle);
 
     // Step 1: Extract Tracks via InnerTube/Web Scraper
-    const captionTracks = await fetchCaptionsTrack(videoId);
+    let captionTracks = null;
+    try {
+      captionTracks = await fetchCaptionsTrack(videoId);
+    } catch (trackErr) {
+      if (trackErr.isUnavailable) {
+        return res.status(404).json({
+          error: `This YouTube video is unavailable (${trackErr.reason || 'Video unavailable or removed'}).`,
+          videoId,
+        });
+      }
+    }
     if (captionTracks && captionTracks.length > 0) {
       availableTracks = captionTracks.map(t => ({
         name: t.name?.runs?.[0]?.text || t.name?.simpleText || t.languageCode,
@@ -956,6 +975,12 @@ app.get('/api/transcript', async (req, res) => {
           return res.status(404).json({
             error: 'NO_CAPTIONS_AVAILABLE',
             message: 'This video has no captions and audio transcription could not be completed.',
+            videoId,
+          });
+        }
+        if (whisperErr.message.includes('unavailable') || whisperErr.message.includes('Private') || whisperErr.message.includes('ERROR: [youtube]')) {
+          return res.status(404).json({
+            error: 'This YouTube video is unavailable or has been removed/made private.',
             videoId,
           });
         }
