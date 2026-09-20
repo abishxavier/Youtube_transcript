@@ -26,6 +26,9 @@ const state = {
 
 const transcriber = new TranscriberService();
 
+// Server capability status (keeps all actual keys private on backend)
+let serverConfig = { hasGroqApiKey: false, hasGeminiApiKey: false, hasOpenAiApiKey: false };
+
 // DOM Elements Cache
 let elements = {};
 
@@ -33,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
   cacheDOMElements();
   initLanguageSelectors();
   initSettings();
+  fetchServerConfig();
   bindEvents();
   checkUrlParams();
 });
@@ -71,6 +75,7 @@ function cacheDOMElements() {
     prefLangSelect: document.getElementById('pref-lang-select'),
     geminiApiKeyInput: document.getElementById('gemini-api-key-input'),
     openaiApiKeyInput: document.getElementById('openai-api-key-input'),
+    serverGroqStatusBadge: document.getElementById('server-groq-status-badge'),
     saveSettingsBtn: document.getElementById('save-settings-btn'),
     loadingText: document.getElementById('loading-text'),
 
@@ -123,6 +128,29 @@ function initSettings() {
   const openaiKey = TranscriberService.getOpenAiApiKey();
   if (elements.openaiApiKeyInput) {
     elements.openaiApiKeyInput.value = openaiKey || '';
+  }
+  updateServerConfigUI();
+}
+
+async function fetchServerConfig() {
+  try {
+    const res = await fetch(AppConfig.apiUrl('/api/server-config'));
+    if (res.ok) {
+      serverConfig = await res.json();
+      updateServerConfigUI();
+    }
+  } catch (_) {
+    // Non-critical: falls back to client-only mode
+  }
+}
+
+function updateServerConfigUI() {
+  if (elements.serverGroqStatusBadge) {
+    if (serverConfig.hasGroqApiKey) {
+      elements.serverGroqStatusBadge.style.display = 'inline-flex';
+    } else {
+      elements.serverGroqStatusBadge.style.display = 'none';
+    }
   }
 }
 
@@ -197,7 +225,7 @@ function bindEvents() {
       else localStorage.removeItem('OPENAI_API_KEY');
 
       elements.settingsModal.classList.remove('active');
-      showToast('Settings saved! Free Whisper AI enabled for captionless videos.', 'success');
+      showToast('Preferences saved successfully!', 'success');
 
       // If video is loaded and user changed preference, translate
       if (state.currentVideoId) {
@@ -353,10 +381,10 @@ async function handleFetchVideo() {
     return;
   }
 
-  // Smart loading message: hint about Whisper if an OpenAI key is configured
-  const hasOpenAiKey = !!TranscriberService.getOpenAiApiKey();
-  showLoading(true, hasOpenAiKey
-    ? 'Fetching transcript... (Whisper AI ready for captionless videos)'
+  // Smart loading message: hint about AI audio processing if active
+  const hasAiKey = serverConfig.hasGroqApiKey || !!TranscriberService.getOpenAiApiKey();
+  showLoading(true, hasAiKey
+    ? 'Fetching transcript... (AI audio recognition ready)'
     : 'Fetching video transcript...');
   hideStatusAlert();
 
@@ -377,13 +405,13 @@ async function handleFetchVideo() {
     }
   }
 
-  // Progressive loading message: if the request takes >6s (Whisper jobs take 5–30s),
+  // Progressive loading message: if the request takes >4s (Whisper jobs take 3–15s),
   // update the spinner text so the user knows AI transcription is in progress.
   let whisperMsgTimer = null;
-  if (hasOpenAiKey) {
+  if (hasAiKey) {
     whisperMsgTimer = setTimeout(() => {
-      showLoading(true, '🎙️ Transcribing audio with Whisper AI... (may take 10–30s for long videos)');
-    }, 6000);
+      showLoading(true, '🎙️ Transcribing audio with AI... (this may take a few seconds)');
+    }, 4000);
   }
 
   try {
@@ -451,13 +479,9 @@ async function handleFetchVideo() {
     const errBody = err._body || {};
     if (errBody.requiresOpenAiKey || (err.message && err.message.includes('NO_CAPTIONS_NO_KEY'))) {
       showStatusAlert(
-        'This video has no captions. Add your <strong>free Groq API key</strong> in <a href="#" id="open-settings-from-error" style="color:var(--primary-glow);text-decoration:underline;">Settings ⚙️</a> to transcribe any video using Whisper Large V3 for free.',
+        'This video does not have available captions and audio transcription could not be completed for it. Please try another video.',
         'warning'
       );
-      setTimeout(() => {
-        const link = document.getElementById('open-settings-from-error');
-        if (link) link.addEventListener('click', (e) => { e.preventDefault(); initSettings(); elements.settingsModal.classList.add('active'); });
-      }, 100);
     } else {
       showStatusAlert(err.message || 'Could not load transcript for this video.', 'error');
     }

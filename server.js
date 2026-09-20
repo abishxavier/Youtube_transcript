@@ -11,6 +11,13 @@ import { createReadStream, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+// Automatically load local .env file if present (Node.js 20.6+ native)
+try {
+  process.loadEnvFile();
+} catch (_) {
+  // Ignored in cloud environments (Render, Railway, etc.) where environment variables are injected directly
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -569,7 +576,7 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
     throw new Error('NO_AI_KEY');
   }
 
-  const isGroq = activeKey.startsWith('gsk_') || !!process.env.GROQ_API_KEY;
+  const isGroq = activeKey.startsWith('gsk_') || activeKey === process.env.GROQ_API_KEY;
   const client = new OpenAI({
     apiKey: activeKey,
     baseURL: isGroq ? 'https://api.groq.com/openai/v1' : undefined,
@@ -643,6 +650,15 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
 // 0. Health Check Endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Safe Server Configuration Status (Safety: returns ONLY booleans, NEVER returns API keys)
+app.get('/api/server-config', (req, res) => {
+  res.json({
+    hasGroqApiKey: Boolean(process.env.GROQ_API_KEY),
+    hasGeminiApiKey: Boolean(process.env.GEMINI_API_KEY),
+    hasOpenAiApiKey: Boolean(process.env.OPENAI_API_KEY),
+  });
 });
 
 // Debug Endpoint for diagnosing Render network/IP responses
@@ -938,10 +954,9 @@ app.get('/api/transcript', async (req, res) => {
       } catch (whisperErr) {
         if (whisperErr.message === 'NO_AI_KEY' || whisperErr.message === 'NO_OPENAI_KEY') {
           return res.status(404).json({
-            error: 'NO_CAPTIONS_NO_KEY',
-            message: 'This video has no captions. Add your free Groq API key in Settings to enable AI audio transcription for any video.',
+            error: 'NO_CAPTIONS_AVAILABLE',
+            message: 'This video has no captions and audio transcription could not be completed.',
             videoId,
-            requiresOpenAiKey: true,
           });
         }
         return res.status(500).json({

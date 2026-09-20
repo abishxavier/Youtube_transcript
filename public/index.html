@@ -317,38 +317,25 @@
               <option value="ko">🇰🇷 Korean (한국어)</option>
               <option value="it">🇮🇹 Italian (Italiano)</option>
             </select>
+          <div class="settings-group" style="margin-top: 1.25rem;">
+            <div style="padding: 14px 16px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); border-radius: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 1.1rem;">🎙️</span>
+                  <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-primary);">AI Speech Recognition</span>
+                </div>
+                <span id="server-groq-status-badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.35); font-size: 0.72rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600;">Active</span>
+              </div>
+              <p style="color: var(--text-muted); font-size: 0.82rem; margin: 0; line-height: 1.45;">
+                High-accuracy AI speech-to-text is enabled automatically for videos without existing captions.
+              </p>
+            </div>
           </div>
 
-          <div class="settings-group" style="margin-top: 1.25rem;">
-            <label class="settings-label">
-              <span>✨ Google Gemini API Key (Optional - 100% Free)</span>
-              <small style="color: var(--text-muted); display: block; font-size: 0.82rem; margin-top: 2px;">
-                Provides 100% authentic human-grade AI translation with native colloquial fluency. Get a free key at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: var(--primary-glow); text-decoration: underline;">Google AI Studio</a>.
-              </small>
-            </label>
-            <input 
-              type="password" 
-              id="gemini-api-key-input" 
-              class="url-input" 
-              placeholder="Paste Gemini API key (AIzaSy...)" 
-              style="width: 100%; margin-top: 6px;"
-            />
-          </div>
-
-          <div class="settings-group" style="margin-top: 1.25rem;">
-            <label class="settings-label">
-              <span>🎙️ Free AI Audio Transcription (Groq / OpenAI Key)</span>
-              <small style="color: var(--text-muted); display: block; font-size: 0.82rem; margin-top: 2px;">
-                Enables <strong style="color: var(--primary-glow);">Whisper Large V3</strong> to transcribe any YouTube video without captions. Groq keys (<code style="color: #34d399;">gsk_...</code>) are <strong style="color: #34d399;">100% FREE</strong> with no credit card! Get one free at <a href="https://console.groq.com/keys" target="_blank" style="color: var(--primary-glow); text-decoration: underline;">Groq Console</a>.
-              </small>
-            </label>
-            <input 
-              type="password" 
-              id="openai-api-key-input" 
-              class="url-input" 
-              placeholder="Paste Groq key (gsk_...) or OpenAI key (sk-...)" 
-              style="width: 100%; margin-top: 6px;"
-            />
+          <!-- Hidden from website visitors; managed securely via backend .env -->
+          <div id="developer-keys-section" style="display: none;" aria-hidden="true">
+            <input type="password" id="gemini-api-key-input" />
+            <input type="password" id="openai-api-key-input" />
           </div>
 
           <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 1.5rem;">
