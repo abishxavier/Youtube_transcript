@@ -255,6 +255,75 @@ async function fetchCaptionsTrack(videoId) {
 }
 
 /**
+ * Fast & High-Reliability Subtitle Extractor using yt-dlp metadata
+ * Bypasses all YouTube bot checks, sign-in walls, and datacenter IP blocks.
+ * Zero media download (skipDownload: true). Fast and memory-safe (~1-2 seconds).
+ */
+async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
+  try {
+    console.log(`[yt-dlp Subtitles] Extracting captions metadata for ${videoId}...`);
+    const info = await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+      dumpSingleJson: true,
+      skipDownload: true,
+      noPlaylist: true,
+      noCacheDir: true,
+      extractorArgs: 'youtube:player_client=android',
+    });
+
+    const allSubs = { ...(info.automatic_captions || {}), ...(info.subtitles || {}) };
+    const availableLangs = Object.keys(allSubs);
+    if (availableLangs.length === 0) return null;
+
+    let chosenLang = preferredLang && allSubs[preferredLang] ? preferredLang : null;
+    if (!chosenLang) {
+      const priorities = ['hi', 'en', 'es', 'ta', 'te', 'ml', 'kn', 'bn', 'mr', 'gu', 'pa', 'fr', 'de', 'ja', 'ar', 'ru'];
+      for (const p of priorities) {
+        if (allSubs[p]) { chosenLang = p; break; }
+      }
+    }
+    if (!chosenLang) chosenLang = availableLangs[0];
+
+    const formats = allSubs[chosenLang];
+    if (!formats || formats.length === 0) return null;
+
+    // Prefer json3 format
+    const format = formats.find(f => f.ext === 'json3') || formats.find(f => f.ext === 'vtt') || formats[0];
+    if (!format || !format.url) return null;
+
+    const res = await fetch(format.url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+
+    if (format.ext === 'json3') {
+      const json = await res.json();
+      const segments = json.events
+        ?.filter(e => e.segs && Array.isArray(e.segs))
+        ?.map(e => {
+          const text = e.segs.map(s => s.utf8 || '').join('').trim();
+          return {
+            text: decodeHtmlEntities(text.replace(/\n+/g, ' ')),
+            start: Math.round((e.tStartMs / 1000) * 100) / 100,
+            duration: Math.round(((e.dDurationMs || 2500) / 1000) * 100) / 100,
+          };
+        })
+        ?.filter(s => s.text && s.text.length > 0);
+
+      if (segments && segments.length > 0) {
+        return {
+          segments,
+          language: chosenLang,
+          title: info.title || null,
+          author: info.uploader || info.channel || null,
+          availableTracks: availableLangs.map(l => ({ languageCode: l, name: l })),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(`[yt-dlp Subtitles] Extraction warning for ${videoId}:`, err.message);
+  }
+  return null;
+}
+
+/**
  * Fetch and parse raw timedtext XML (srv3 and classic format)
  */
 async function fetchTimedText(baseUrl) {
@@ -646,7 +715,6 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
         output: tmpFile,
         noPlaylist: true,
         noCacheDir: true,
-        noProxy: true, // Bypass proxy for media downloads to preserve Webshare bandwidth
         maxFilesize: '24M',
         extractorArgs: 'youtube:player_client=android',
       });
@@ -1004,6 +1072,23 @@ app.get('/api/transcript', async (req, res) => {
         } catch (ytErr) {
           // continue to next fallback
         }
+      }
+    }
+
+    // Step 2.5: High-Reliability yt-dlp Subtitle Extraction (Bypasses Datacenter / Cloud Blocks)
+    if (!transcript || transcript.length === 0) {
+      try {
+        const ytdlpSubs = await fetchCaptionsWithYtDlp(videoId, requestedLang || guessedAudioLang);
+        if (ytdlpSubs && ytdlpSubs.segments && ytdlpSubs.segments.length > 0) {
+          transcript = ytdlpSubs.segments;
+          detectedSourceLang = ytdlpSubs.language || detectedSourceLang;
+          if (ytdlpSubs.availableTracks && ytdlpSubs.availableTracks.length > 0) {
+            availableTracks = ytdlpSubs.availableTracks;
+          }
+          console.log(`[yt-dlp Subtitles] Successfully extracted ${transcript.length} segments in ${detectedSourceLang}`);
+        }
+      } catch (ytdlpErr) {
+        console.warn(`[yt-dlp Subtitles] Fallback error:`, ytdlpErr.message);
       }
     }
 
