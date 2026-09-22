@@ -70,12 +70,24 @@ const MAX_CACHE_ITEMS = 40;
 const transcriptCache = new Map();
 const videoInfoCache = new Map();
 
+// In-memory TTS audio cache (bounded to 120 segments)
+const MAX_TTS_CACHE_ITEMS = 120;
+const ttsAudioCache = new Map();
+
 function setBoundedCache(cache, key, value) {
   if (cache.size >= MAX_CACHE_ITEMS) {
     const oldestKey = cache.keys().next().value;
     cache.delete(oldestKey);
   }
   cache.set(key, value);
+}
+
+function setTtsCache(key, buffer) {
+  if (ttsAudioCache.size >= MAX_TTS_CACHE_ITEMS) {
+    const oldestKey = ttsAudioCache.keys().next().value;
+    ttsAudioCache.delete(oldestKey);
+  }
+  ttsAudioCache.set(key, buffer);
 }
 
 // Concurrency mutex: run max 1 Whisper audio processing job at a time to prevent RAM spikes
@@ -702,6 +714,7 @@ app.get('/api/server-config', (req, res) => {
     hasGroqApiKey: Boolean(process.env.GROQ_API_KEY),
     hasGeminiApiKey: Boolean(process.env.GEMINI_API_KEY),
     hasOpenAiApiKey: Boolean(process.env.OPENAI_API_KEY),
+    hasTtsAudio: true,
   });
 });
 
@@ -1203,6 +1216,161 @@ Return ONLY a valid JSON object with this exact structure:
     res.json(summary);
   } catch (err) {
     res.status(500).json({ error: `Summary generation failed: ${err.message}` });
+  }
+});
+
+// =========================================================================
+// 6. AI Text-To-Speech (TTS) & Audio Dubbing Engine
+// =========================================================================
+
+/**
+ * Normalize language code for Google Neural TTS
+ */
+function normalizeTTSLang(lang) {
+  if (!lang || lang === 'auto') return 'en';
+  const clean = lang.trim().toLowerCase();
+  if (clean === 'zh' || clean === 'zh-cn' || clean === 'chinese') return 'zh-CN';
+  if (clean === 'zh-tw') return 'zh-TW';
+  if (clean === 'pt-br') return 'pt-BR';
+  if (clean.includes('-')) return clean.split('-')[0];
+  return clean;
+}
+
+/**
+ * Break text into <= 180 character chunks for seamless Google TTS streaming
+ */
+function chunkTextForTTS(text, maxLength = 180) {
+  if (!text || text.length <= maxLength) return [text.trim()];
+  const sentences = text.match(/[^.!?।;\n]+[.!?।;\n]+|[^.!?।;\n]+$/g) || [text];
+  const chunks = [];
+  let current = '';
+
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+    if ((current + ' ' + trimmed).trim().length <= maxLength) {
+      current = (current + ' ' + trimmed).trim();
+    } else {
+      if (current) chunks.push(current);
+      if (trimmed.length > maxLength) {
+        const words = trimmed.split(/\s+/);
+        let wordChunk = '';
+        for (const w of words) {
+          if ((wordChunk + ' ' + w).trim().length <= maxLength) {
+            wordChunk = (wordChunk + ' ' + w).trim();
+          } else {
+            if (wordChunk) chunks.push(wordChunk);
+            wordChunk = w;
+          }
+        }
+        current = wordChunk;
+      } else {
+        current = trimmed;
+      }
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks.length > 0 ? chunks : [text.trim()];
+}
+
+/**
+ * Fetch a single audio segment chunk from Google Neural TTS
+ */
+async function fetchGoogleTTSChunk(chunk, lang) {
+  const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(chunk)}&tl=${lang}&client=tw-ob`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Referer': 'https://translate.google.com/',
+    },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!res.ok) {
+    throw new Error(`Google TTS request failed with status ${res.status}`);
+  }
+  const arrayBuf = await res.arrayBuffer();
+  return Buffer.from(arrayBuf);
+}
+
+/**
+ * Primary TTS Endpoint: Streams MP3 audio in target language
+ * GET /api/tts?text=...&lang=...&engine=...&voice=...
+ */
+app.get('/api/tts', async (req, res) => {
+  const { text, lang = 'en', engine = 'google', voice = 'alloy', apiKey } = req.query;
+
+  if (!text || !text.trim()) {
+    return res.status(400).json({ error: 'Text parameter is required' });
+  }
+
+  const cleanText = text.trim();
+  const normalizedLang = normalizeTTSLang(lang);
+  const cacheKey = `${engine}_${normalizedLang}_${voice}_${cleanText}`;
+
+  // Check in-memory audio cache
+  if (ttsAudioCache.has(cacheKey)) {
+    const cachedBuffer = ttsAudioCache.get(cacheKey);
+    res.set({
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': cachedBuffer.length,
+      'Cache-Control': 'public, max-age=86400',
+      'Accept-Ranges': 'bytes',
+      'X-TTS-Cache': 'HIT',
+    });
+    return res.send(cachedBuffer);
+  }
+
+  try {
+    // 1. OpenAI TTS Engine (if requested or configured)
+    const activeOpenAiKey = apiKey || process.env.OPENAI_API_KEY;
+    if (engine === 'openai' && activeOpenAiKey) {
+      const openAiClient = new OpenAI({ apiKey: activeOpenAiKey });
+      const openAiResp = await openAiClient.audio.speech.create({
+        model: 'tts-1',
+        voice: voice || 'alloy',
+        input: cleanText.slice(0, 4096),
+      });
+      const audioBuffer = Buffer.from(await openAiResp.arrayBuffer());
+      setTtsCache(cacheKey, audioBuffer);
+      res.set({
+        'Content-Type': 'audio/mpeg',
+        'Content-Length': audioBuffer.length,
+        'Cache-Control': 'public, max-age=86400',
+        'Accept-Ranges': 'bytes',
+        'X-TTS-Cache': 'MISS',
+      });
+      return res.send(audioBuffer);
+    }
+
+    // 2. High-Accuracy Google Neural TTS Stream (Free & Multilingual)
+    const chunks = chunkTextForTTS(cleanText, 180);
+    const audioBuffers = [];
+
+    for (const chunk of chunks) {
+      if (chunk.trim()) {
+        const buf = await fetchGoogleTTSChunk(chunk, normalizedLang);
+        audioBuffers.push(buf);
+      }
+    }
+
+    if (audioBuffers.length === 0) {
+      return res.status(400).json({ error: 'Failed to generate audio from given text' });
+    }
+
+    const combinedBuffer = Buffer.concat(audioBuffers);
+    setTtsCache(cacheKey, combinedBuffer);
+
+    res.set({
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': combinedBuffer.length,
+      'Cache-Control': 'public, max-age=86400',
+      'Accept-Ranges': 'bytes',
+      'X-TTS-Cache': 'MISS',
+    });
+    return res.send(combinedBuffer);
+  } catch (err) {
+    console.error('[TTS] Audio generation error:', err.message);
+    return res.status(500).json({ error: `TTS generation failed: ${err.message}` });
   }
 });
 

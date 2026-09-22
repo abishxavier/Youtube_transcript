@@ -91,6 +91,34 @@ export class Exporter {
   }
 
   /**
+   * Export as Voiceover / Dubbing Audio Script (.TXT)
+   */
+  static exportAudioScript(transcript, videoTitle = 'dubbing-script', langCode = 'en') {
+    if (!transcript || transcript.length === 0) return;
+
+    let content = `🎙️ AI VOICE DUBBING & AUDIO SCRIPT\n`;
+    content += `Video Title: ${videoTitle}\n`;
+    content += `Spoken Language: ${langCode.toUpperCase()}\n`;
+    content += `Generated: ${new Date().toLocaleString()}\n`;
+    content += `Total Speech Segments: ${transcript.length}\n`;
+    content += '='.repeat(60) + '\n\n';
+
+    transcript.forEach((item, idx) => {
+      const start = TranscriberService.formatTime(item.start);
+      const dur = (item.duration || 3).toFixed(1);
+      content += `[CUE ${String(idx + 1).padStart(3, '0')}] Time: ${start} (Duration: ${dur}s)\n`;
+      content += `Voiceover Speech: "${item.text}"\n`;
+      if (item.originalText && item.originalText !== item.text) {
+        content += `Original Audio:   "${item.originalText}"\n`;
+      }
+      content += '\n';
+    });
+
+    const safeTitle = this.sanitizeFilename(videoTitle);
+    this.triggerDownload(content, `${safeTitle}_${langCode}_dubbing_script.txt`, 'text/plain;charset=utf-8');
+  }
+
+  /**
    * Export as Structured JSON (.JSON)
    */
   static exportJSON(transcript, videoInfo = {}, langCode = 'en') {

@@ -207,6 +207,101 @@ export function getDuration() {
 }
 
 /**
+ * Get player state (1 = playing, 2 = paused, etc.)
+ */
+export function getPlayerState() {
+  if (player && player.getPlayerState) {
+    return player.getPlayerState();
+  }
+  return -1;
+}
+
+/**
+ * Set YouTube Video Volume (0 to 100)
+ */
+export function setVolume(volume) {
+  if (player && player.setVolume) {
+    const clamped = Math.max(0, Math.min(100, Math.round(volume)));
+    player.setVolume(clamped);
+  }
+}
+
+/**
+ * Get current YouTube Video Volume (0 to 100)
+ */
+export function getVolume() {
+  if (player && player.getVolume) {
+    return player.getVolume();
+  }
+  return 100;
+}
+
+/**
+ * Mute YouTube Player
+ */
+export function mute() {
+  if (player && player.mute) {
+    player.mute();
+  }
+}
+
+/**
+ * Unmute YouTube Player
+ */
+export function unMute() {
+  if (player && player.unMute) {
+    player.unMute();
+  }
+}
+
+/**
+ * Check if YouTube Player is Muted
+ */
+export function isMuted() {
+  if (player && player.isMuted) {
+    return player.isMuted();
+  }
+  return false;
+}
+
+let volumeFadeInterval = null;
+
+/**
+ * Smoothly transition video volume (for smart audio ducking)
+ */
+export function fadeVolume(targetVolume, durationMs = 200) {
+  if (!player || !player.getVolume || !player.setVolume) return;
+  if (volumeFadeInterval) clearInterval(volumeFadeInterval);
+
+  const startVol = player.getVolume();
+  const diff = targetVolume - startVol;
+  if (Math.abs(diff) < 2) {
+    player.setVolume(targetVolume);
+    return;
+  }
+
+  const steps = 8;
+  const stepTime = Math.max(15, Math.floor(durationMs / steps));
+  let stepCount = 0;
+
+  volumeFadeInterval = setInterval(() => {
+    stepCount++;
+    const progress = stepCount / steps;
+    const current = Math.round(startVol + diff * progress);
+    if (player && player.setVolume) {
+      player.setVolume(Math.max(0, Math.min(100, current)));
+    }
+    if (stepCount >= steps) {
+      clearInterval(volumeFadeInterval);
+      volumeFadeInterval = null;
+      if (player && player.setVolume) {
+        player.setVolume(targetVolume);
+      }
+    }
+  }, stepTime);
+}
+
+/**
  * Track playback time smoothly
  */
 function startTimeTracker() {

@@ -194,6 +194,107 @@
             </div>
           </div>
         </div>
+
+        <!-- AI Audio Dubbing Studio Panel -->
+        <div class="dubbing-studio-card" id="dubbing-studio-card">
+          <div class="dubbing-studio-header">
+            <div class="studio-title-box">
+              <div class="studio-icon-glow">🎙️</div>
+              <div>
+                <div class="studio-title">AI Audio Dubbing Studio</div>
+                <div class="studio-subtitle">Speak translated audio in sync with video</div>
+              </div>
+            </div>
+            <div class="dubbing-switch-wrap">
+              <label class="switch-glow" title="Toggle Real-Time AI Audio Dubbing">
+                <input type="checkbox" id="dubbing-master-toggle" />
+                <span class="slider-glow"></span>
+              </label>
+              <span id="dubbing-status-pill" class="status-pill status-off">OFF</span>
+            </div>
+          </div>
+
+          <div class="dubbing-studio-body" id="dubbing-studio-body">
+            <!-- Voice Visualizer & Currently Spoken Line -->
+            <div class="dubbing-visualizer-bar" id="dubbing-visualizer-bar">
+              <div class="eq-waves" id="eq-waves" aria-hidden="true">
+                <span class="bar bar-1"></span>
+                <span class="bar bar-2"></span>
+                <span class="bar bar-3"></span>
+                <span class="bar bar-4"></span>
+                <span class="bar bar-5"></span>
+              </div>
+              <div class="spoken-text-ticker" id="spoken-text-ticker">
+                <span class="ticker-label">Now Speaking:</span>
+                <span class="ticker-content" id="dubbed-speaking-text">Waiting for playback to begin...</span>
+              </div>
+            </div>
+
+            <!-- Audio Mixing Mode Selector -->
+            <div class="studio-control-group">
+              <label class="control-group-label">🎧 Audio Mixing Mode</label>
+              <div class="mode-pills-group" id="dubbing-mode-group">
+                <button type="button" class="mode-pill active" data-mode="ducking" title="Reduces original video to 15% so translated voiceover shines">
+                  <span>🎧 Smart Voiceover</span>
+                  <small>Original at 15%</small>
+                </button>
+                <button type="button" class="mode-pill" data-mode="mute" title="Mutes YouTube video completely, playing only translated voice">
+                  <span>🔇 Mute Original</span>
+                  <small>100% Translated</small>
+                </button>
+                <button type="button" class="mode-pill" data-mode="equal" title="Plays video and translated voice at balanced volume">
+                  <span>🎚️ Equal Mix</span>
+                  <small>50% / 50%</small>
+                </button>
+              </div>
+            </div>
+
+            <!-- Voice Engine & Voice Selection -->
+            <div class="studio-grid-2col">
+              <div class="studio-field">
+                <label class="control-group-label" for="dubbing-engine-select">⚡ Voice Engine</label>
+                <select id="dubbing-engine-select" class="studio-select">
+                  <option value="neural">🎙️ HD Neural AI (Google / Cloud)</option>
+                  <option value="browser">⚡ Browser Web Speech (Instant)</option>
+                </select>
+              </div>
+
+              <div class="studio-field">
+                <label class="control-group-label" for="dubbing-voice-select">🗣️ Voice / Accent</label>
+                <select id="dubbing-voice-select" class="studio-select">
+                  <option value="">Default Language Voice</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Sliders: Speed & Volume -->
+            <div class="studio-grid-2col">
+              <div class="studio-field">
+                <div class="slider-header">
+                  <label class="control-group-label" for="dubbing-speed-slider">⚡ Speech Rate</label>
+                  <span id="dubbing-speed-val" class="slider-val">1.0x</span>
+                </div>
+                <input type="range" id="dubbing-speed-slider" class="studio-slider" min="0.75" max="1.5" step="0.05" value="1.0" />
+              </div>
+
+              <div class="studio-field">
+                <div class="slider-header">
+                  <label class="control-group-label" for="dubbing-vol-slider">🔊 Voice Volume</label>
+                  <span id="dubbing-vol-val" class="slider-val">100%</span>
+                </div>
+                <input type="range" id="dubbing-vol-slider" class="studio-slider" min="0" max="1" step="0.05" value="1.0" />
+              </div>
+            </div>
+
+            <!-- Actions: Test Voice button -->
+            <div class="studio-footer-actions">
+              <button type="button" id="test-voice-btn" class="btn btn-secondary btn-sm" title="Test voice in selected language">
+                ▶️ Test Voice Sample
+              </button>
+              <span class="dubbing-tip">💡 Tip: Speech rate dynamically auto-paces to fit subtitle timing</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Right Column: Interactive Transcript Hub -->
@@ -213,6 +314,9 @@
               <span id="trans-mode-badge" class="badge badge-primary" style="display: none;">
                 ✨ Authentic AI
               </span>
+              <button id="quick-dubbing-toggle-btn" class="btn btn-secondary btn-sm" title="Toggle AI Audio Dubbing">
+                🎙️ Audio Dub: <span id="quick-dub-state">OFF</span>
+              </button>
             </div>
 
             <div class="toolbar-actions">
@@ -391,6 +495,12 @@
             <div class="export-card-icon">📋</div>
             <div class="export-card-title">Copy to Clipboard</div>
             <div class="export-card-desc">Copy entire transcript text instantly to paste anywhere.</div>
+          </div>
+
+          <div id="download-audio-btn" class="export-card">
+            <div class="export-card-icon">🎵</div>
+            <div class="export-card-title">Translated Audio Track</div>
+            <div class="export-card-desc">Play or export audio narration in the selected translated language.</div>
           </div>
         </div>
       </div>

@@ -6,6 +6,7 @@ import { loadVideo, seekTo, togglePlayPause } from './player.js';
 import { TranscriberService } from './transcriber.js';
 import { Exporter } from './exporter.js';
 import { SummaryService } from './summary.js';
+import { AudioDubbingManager } from './dubber.js';
 
 // Application State
 const state = {
@@ -25,6 +26,7 @@ const state = {
 };
 
 const transcriber = new TranscriberService();
+const dubber = new AudioDubbingManager();
 
 // Server capability status (keeps all actual keys private on backend)
 let serverConfig = { hasGroqApiKey: false, hasGeminiApiKey: false, hasOpenAiApiKey: false };
@@ -36,6 +38,7 @@ document.addEventListener('DOMContentLoaded', () => {
   cacheDOMElements();
   initLanguageSelectors();
   initSettings();
+  initDubbingControls();
   fetchServerConfig();
   bindEvents();
   checkUrlParams();
@@ -113,6 +116,24 @@ function cacheDOMElements() {
     // Live Subtitle Bar
     liveSubtitleBar: document.getElementById('live-subtitle-bar'),
     liveSubtitleText: document.getElementById('live-subtitle-text'),
+
+    // AI Audio Dubbing Studio
+    dubbingStudioCard: document.getElementById('dubbing-studio-card'),
+    dubbingMasterToggle: document.getElementById('dubbing-master-toggle'),
+    dubbingStatusPill: document.getElementById('dubbing-status-pill'),
+    quickDubbingToggleBtn: document.getElementById('quick-dubbing-toggle-btn'),
+    quickDubState: document.getElementById('quick-dub-state'),
+    dubbingVisualizerBar: document.getElementById('dubbing-visualizer-bar'),
+    dubbedSpeakingText: document.getElementById('dubbed-speaking-text'),
+    dubbingModePills: document.querySelectorAll('#dubbing-mode-group .mode-pill'),
+    dubbingEngineSelect: document.getElementById('dubbing-engine-select'),
+    dubbingVoiceSelect: document.getElementById('dubbing-voice-select'),
+    dubbingSpeedSlider: document.getElementById('dubbing-speed-slider'),
+    dubbingSpeedVal: document.getElementById('dubbing-speed-val'),
+    dubbingVolSlider: document.getElementById('dubbing-vol-slider'),
+    dubbingVolVal: document.getElementById('dubbing-vol-val'),
+    testVoiceBtn: document.getElementById('test-voice-btn'),
+    downloadAudioBtn: document.getElementById('download-audio-btn'),
   };
 }
 
@@ -302,6 +323,14 @@ function bindEvents() {
     }
   });
 
+  // Download Translated Audio Dubbing Script
+  if (elements.downloadAudioBtn) {
+    elements.downloadAudioBtn.addEventListener('click', () => {
+      Exporter.exportAudioScript(state.transcript, state.videoInfo?.title, state.activeLanguage === 'auto' ? state.sourceLanguage : state.activeLanguage);
+      showToast('Downloaded Voiceover Dubbing Script!', 'success');
+    });
+  }
+
   // AI Summary Modal
   elements.summaryBtn.addEventListener('click', () => handleGenerateSummary());
   elements.closeSummaryModalBtn.addEventListener('click', () => {
@@ -468,6 +497,11 @@ async function handleFetchVideo() {
     // Pre-populate live subtitle bar with first line so it's visible immediately
     refreshLiveSubtitleBarText();
 
+    // ── Sync with AI Audio Dubbing Manager ──
+    const currentLang = state.activeLanguage === 'auto' ? state.sourceLanguage : state.activeLanguage;
+    dubber.updateContext(state.transcript, currentLang, state.sourceLanguage);
+    populateDubbingVoices(currentLang);
+
     // 4. Initialize YouTube Player in background (does not block transcript)
     loadVideo('youtube-player-iframe', videoId, {
       onTimeUpdate: (status) => handlePlaybackTimeUpdate(status),
@@ -512,6 +546,11 @@ async function handleLanguageChange(langCode) {
     // ── Force-refresh live subtitle bar in the new language ──
     // Clear the cached last text so it always re-renders
     refreshLiveSubtitleBarText();
+
+    // ── Sync Audio Dubbing with newly selected language ──
+    const activeTarget = langCode === 'auto' ? state.sourceLanguage : langCode;
+    dubber.updateContext(state.transcript, activeTarget, state.sourceLanguage);
+    populateDubbingVoices(activeTarget);
   } catch (err) {
     console.error('Translation error:', err);
     showToast(`Translation failed: ${err.message}`, 'error');
@@ -603,10 +642,10 @@ function renderTranscript() {
       seekTo(item.start);
     });
 
-    // Text to Speech
+    // Text to Speech (using Audio Dubbing Manager)
     row.querySelector('.speak-btn').addEventListener('click', (e) => {
       e.stopPropagation();
-      speakText(item.text, state.activeLanguage === 'auto' ? state.sourceLanguage : state.activeLanguage);
+      dubber.speakSegment(item, index, { isManual: true });
     });
 
     // Copy single line
@@ -662,6 +701,9 @@ function renderParagraphReadingView() {
 
 function handlePlaybackTimeUpdate({ currentTime, duration, isPlaying }) {
   if (!state.transcript || state.transcript.length === 0) return;
+
+  // Real-time Synchronized Audio Dubbing
+  dubber.onPlaybackTimeUpdate({ currentTime, duration, isPlaying });
 
   elements.activeTimeDisplay.textContent = `${TranscriberService.formatTime(currentTime)} / ${TranscriberService.formatTime(duration)}`;
 
@@ -848,16 +890,186 @@ async function handleGenerateSummary() {
 }
 
 function speakText(text, langCode) {
-  if (!('speechSynthesis' in window)) {
-    showToast('Text-to-speech is not supported by your browser', 'warning');
-    return;
+  dubber.testVoice(text);
+}
+
+function initDubbingControls() {
+  // 1. Sync UI controls with current dubber state
+  if (elements.dubbingMasterToggle) {
+    elements.dubbingMasterToggle.checked = dubber.enabled;
+  }
+  if (elements.dubbingStatusPill) {
+    elements.dubbingStatusPill.textContent = dubber.enabled ? 'ACTIVE' : 'OFF';
+    elements.dubbingStatusPill.className = `status-pill ${dubber.enabled ? 'status-on' : 'status-off'}`;
+  }
+  if (elements.dubbingStudioCard) {
+    elements.dubbingStudioCard.classList.toggle('active-dubbing', dubber.enabled);
+  }
+  if (elements.quickDubbingToggleBtn) {
+    elements.quickDubbingToggleBtn.classList.toggle('active', dubber.enabled);
+  }
+  if (elements.quickDubState) {
+    elements.quickDubState.textContent = dubber.enabled ? 'ON' : 'OFF';
+  }
+  if (elements.dubbingEngineSelect) {
+    elements.dubbingEngineSelect.value = dubber.engine;
+  }
+  if (elements.dubbingSpeedSlider && elements.dubbingSpeedVal) {
+    elements.dubbingSpeedSlider.value = dubber.speed;
+    elements.dubbingSpeedVal.textContent = dubber.speed.toFixed(2) + 'x';
+  }
+  if (elements.dubbingVolSlider && elements.dubbingVolVal) {
+    elements.dubbingVolSlider.value = dubber.volume;
+    elements.dubbingVolVal.textContent = Math.round(dubber.volume * 100) + '%';
   }
 
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = langCode || 'en';
-  utterance.rate = 0.95;
-  window.speechSynthesis.speak(utterance);
+  // Update mode pills active state
+  if (elements.dubbingModePills) {
+    elements.dubbingModePills.forEach(pill => {
+      pill.classList.toggle('active', pill.getAttribute('data-mode') === dubber.mode);
+    });
+  }
+
+  // 2. Dubber Events
+  dubber.onSpeechStart = ({ index, text }) => {
+    document.querySelectorAll('.transcript-row.speaking').forEach(r => r.classList.remove('speaking'));
+    const activeRow = document.getElementById(`transcript-row-${index}`);
+    if (activeRow) activeRow.classList.add('speaking');
+
+    if (elements.dubbingVisualizerBar) {
+      elements.dubbingVisualizerBar.classList.add('speaking');
+    }
+    if (elements.dubbedSpeakingText) {
+      elements.dubbedSpeakingText.textContent = text;
+    }
+  };
+
+  dubber.onSpeechEnd = ({ index }) => {
+    const row = document.getElementById(`transcript-row-${index}`);
+    if (row) row.classList.remove('speaking');
+
+    if (elements.dubbingVisualizerBar) {
+      elements.dubbingVisualizerBar.classList.remove('speaking');
+    }
+  };
+
+  dubber.onStatusChange = (status) => {
+    if (elements.dubbingMasterToggle) {
+      elements.dubbingMasterToggle.checked = status.enabled;
+    }
+    if (elements.dubbingStatusPill) {
+      elements.dubbingStatusPill.textContent = status.enabled ? 'ACTIVE' : 'OFF';
+      elements.dubbingStatusPill.className = `status-pill ${status.enabled ? 'status-on' : 'status-off'}`;
+    }
+    if (elements.dubbingStudioCard) {
+      elements.dubbingStudioCard.classList.toggle('active-dubbing', status.enabled);
+    }
+    if (elements.quickDubbingToggleBtn) {
+      elements.quickDubbingToggleBtn.classList.toggle('active', status.enabled);
+    }
+    if (elements.quickDubState) {
+      elements.quickDubState.textContent = status.enabled ? 'ON' : 'OFF';
+    }
+    if (!status.isSpeaking && elements.dubbedSpeakingText) {
+      elements.dubbedSpeakingText.textContent = status.enabled 
+        ? 'Waiting for video playback...' 
+        : 'Audio dubbing is paused';
+    }
+  };
+
+  dubber.onVoicesLoaded = () => {
+    populateDubbingVoices(state.activeLanguage === 'auto' ? state.sourceLanguage : state.activeLanguage);
+  };
+
+  // 3. User Controls Bindings
+  // Master Switch
+  if (elements.dubbingMasterToggle) {
+    elements.dubbingMasterToggle.addEventListener('change', (e) => {
+      dubber.setEnabled(e.target.checked);
+      showToast(e.target.checked ? '🎙️ AI Audio Dubbing Activated!' : 'Audio Dubbing Turned Off', e.target.checked ? 'success' : 'info');
+    });
+  }
+
+  // Quick dub toggle button in transcript header
+  if (elements.quickDubbingToggleBtn) {
+    elements.quickDubbingToggleBtn.addEventListener('click', () => {
+      const newState = !dubber.enabled;
+      dubber.setEnabled(newState);
+      showToast(newState ? '🎙️ AI Audio Dubbing Activated!' : 'Audio Dubbing Turned Off', newState ? 'success' : 'info');
+    });
+  }
+
+  // Mode Pills
+  if (elements.dubbingModePills) {
+    elements.dubbingModePills.forEach(pill => {
+      pill.addEventListener('click', () => {
+        const mode = pill.getAttribute('data-mode');
+        elements.dubbingModePills.forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        dubber.setMode(mode);
+        const modeNames = { ducking: 'Smart Voiceover (15% original)', mute: 'Mute Original (100% translated)', equal: 'Equal Mix (50/50)' };
+        showToast(`Dubbing mode: ${modeNames[mode]}`, 'info');
+      });
+    });
+  }
+
+  // Engine Select
+  if (elements.dubbingEngineSelect) {
+    elements.dubbingEngineSelect.addEventListener('change', (e) => {
+      dubber.setEngine(e.target.value);
+      showToast(`Voice Engine: ${e.target.value === 'neural' ? 'HD Neural AI' : 'Browser Web Speech'}`, 'info');
+    });
+  }
+
+  // Voice Select
+  if (elements.dubbingVoiceSelect) {
+    elements.dubbingVoiceSelect.addEventListener('change', (e) => {
+      dubber.setVoiceURI(e.target.value);
+    });
+  }
+
+  // Speed Slider
+  if (elements.dubbingSpeedSlider) {
+    elements.dubbingSpeedSlider.addEventListener('input', (e) => {
+      const spd = parseFloat(e.target.value);
+      elements.dubbingSpeedVal.textContent = spd.toFixed(2) + 'x';
+      dubber.setSpeed(spd);
+    });
+  }
+
+  // Volume Slider
+  if (elements.dubbingVolSlider) {
+    elements.dubbingVolSlider.addEventListener('input', (e) => {
+      const vol = parseFloat(e.target.value);
+      elements.dubbingVolVal.textContent = Math.round(vol * 100) + '%';
+      dubber.setVolume(vol);
+    });
+  }
+
+  // Test Voice Sample Button
+  if (elements.testVoiceBtn) {
+    elements.testVoiceBtn.addEventListener('click', () => {
+      const currentLang = state.activeLanguage === 'auto' ? state.sourceLanguage : state.activeLanguage;
+      const langObj = getLanguageByCode(currentLang);
+      dubber.testVoice(`Hello! This is a preview of the audio translation in ${langObj.name}.`);
+      showToast(`Playing voice preview in ${langObj.name}...`, 'info');
+    });
+  }
+}
+
+function populateDubbingVoices(langCode) {
+  if (!elements.dubbingVoiceSelect) return;
+  const currentVal = dubber.selectedVoiceURI;
+  elements.dubbingVoiceSelect.innerHTML = '<option value="">Default Language Voice (Auto)</option>';
+
+  const voices = dubber.getAvailableVoices(langCode);
+  voices.forEach(voice => {
+    const opt = document.createElement('option');
+    opt.value = voice.voiceURI;
+    opt.textContent = `${voice.name} (${voice.lang})${voice.default ? ' [Default]' : ''}`;
+    if (voice.voiceURI === currentVal) opt.selected = true;
+    elements.dubbingVoiceSelect.appendChild(opt);
+  });
 }
 
 function showToast(message, type = 'info') {
