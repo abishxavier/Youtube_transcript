@@ -1215,6 +1215,24 @@ app.post('/api/translate', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: `Translation failed: ${err.message}` });
   }
+app.get('/api/debug-render', async (req, res) => {
+  const videoId = req.query.v || '8t0_xs0399g';
+  const out = { videoId };
+  try {
+    const raw = await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+      dumpSingleJson: true,
+      skipDownload: true,
+      noPlaylist: true,
+      noCacheDir: true,
+      extractorArgs: 'youtube:player_client=android',
+    });
+    out.ytdlpSuccess = true;
+    out.automatic_captions = Object.keys(raw.automatic_captions || {});
+    out.subtitles = Object.keys(raw.subtitles || {});
+  } catch (e) {
+    out.ytdlpError = e.message;
+  }
+  res.json(out);
 });
 
 // 5. AI Video Summary Generator API
