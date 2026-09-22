@@ -7,7 +7,7 @@ import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import ytdl from '@distube/ytdl-core';
 import youtubedl from 'youtube-dl-exec';
 import OpenAI from 'openai';
-import { createReadStream, createWriteStream, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { createReadStream, createWriteStream, writeFileSync, readFileSync, unlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -197,10 +197,15 @@ async function fetchInnerTubeCaptionTracks(videoId) {
       const playability = data?.playabilityStatus;
       if (playability && (playability.status === 'ERROR' || playability.status === 'LOGIN_REQUIRED')) {
         const reason = playability.reason || 'This video is unavailable';
-        const unavailErr = new Error(`VIDEO_UNAVAILABLE: ${reason}`);
-        unavailErr.isUnavailable = true;
-        unavailErr.reason = reason;
-        throw unavailErr;
+        const lower = reason.toLowerCase();
+        if (lower.includes('private') || lower.includes('removed') || lower.includes('copyright') || lower.includes('deleted')) {
+          const unavailErr = new Error(`VIDEO_UNAVAILABLE: ${reason}`);
+          unavailErr.isUnavailable = true;
+          unavailErr.reason = reason;
+          throw unavailErr;
+        }
+        console.warn(`[InnerTube] Status ${playability.status} (${reason}). Proceeding to fallbacks...`);
+        return null;
       }
       const captionTracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
       if (Array.isArray(captionTracks) && captionTracks.length > 0) {
@@ -254,6 +259,22 @@ async function fetchCaptionsTrack(videoId) {
   return null;
 }
 
+function parseJson3Events(events) {
+  if (!events || !Array.isArray(events)) return null;
+  const segments = events
+    .filter(e => e.segs && Array.isArray(e.segs))
+    .map(e => {
+      const text = e.segs.map(s => s.utf8 || '').join('').trim();
+      return {
+        text: decodeHtmlEntities(text.replace(/\n+/g, ' ')),
+        start: Math.round((e.tStartMs / 1000) * 100) / 100,
+        duration: Math.round(((e.dDurationMs || 2500) / 1000) * 100) / 100,
+      };
+    })
+    .filter(s => s.text && s.text.length > 0);
+  return segments && segments.length > 0 ? segments : null;
+}
+
 /**
  * Fast & High-Reliability Subtitle Extractor using yt-dlp metadata
  * Bypasses all YouTube bot checks, sign-in walls, and datacenter IP blocks.
@@ -286,36 +307,53 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
     const formats = allSubs[chosenLang];
     if (!formats || formats.length === 0) return null;
 
-    // Prefer json3 format
-    const format = formats.find(f => f.ext === 'json3') || formats.find(f => f.ext === 'vtt') || formats[0];
-    if (!format || !format.url) return null;
+    let segments = null;
 
-    const res = await fetch(format.url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return null;
+    // Method A: In-memory json3 stream fetch
+    const format = formats.find(f => f.ext === 'json3') || formats[0];
+    if (format && format.url && format.ext === 'json3') {
+      try {
+        const res = await fetchYouTube(format.url, { signal: AbortSignal.timeout(6000) });
+        if (res.ok) {
+          const json = await res.json();
+          segments = parseJson3Events(json.events);
+        }
+      } catch (_) {}
+    }
 
-    if (format.ext === 'json3') {
-      const json = await res.json();
-      const segments = json.events
-        ?.filter(e => e.segs && Array.isArray(e.segs))
-        ?.map(e => {
-          const text = e.segs.map(s => s.utf8 || '').join('').trim();
-          return {
-            text: decodeHtmlEntities(text.replace(/\n+/g, ' ')),
-            start: Math.round((e.tStartMs / 1000) * 100) / 100,
-            duration: Math.round(((e.dDurationMs || 2500) / 1000) * 100) / 100,
-          };
-        })
-        ?.filter(s => s.text && s.text.length > 0);
-
-      if (segments && segments.length > 0) {
-        return {
-          segments,
-          language: chosenLang,
-          title: info.title || null,
-          author: info.uploader || info.channel || null,
-          availableTracks: availableLangs.map(l => ({ languageCode: l, name: l })),
-        };
+    // Method B: Direct yt-dlp subtitle download (bypasses datacenter 403 blocks completely)
+    if (!segments || segments.length === 0) {
+      const outBase = join(tmpdir(), `sub_${videoId}_${Date.now()}`);
+      try {
+        await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+          writeSub: true,
+          writeAutoSub: true,
+          subLang: chosenLang,
+          subFormat: 'json3',
+          skipDownload: true,
+          noPlaylist: true,
+          output: outBase + '.%(ext)s',
+          extractorArgs: 'youtube:player_client=android',
+        });
+        const subFile = `${outBase}.${chosenLang}.json3`;
+        if (existsSync(subFile)) {
+          const json = JSON.parse(readFileSync(subFile, 'utf8'));
+          segments = parseJson3Events(json.events);
+          try { unlinkSync(subFile); } catch (_) {}
+        }
+      } catch (dlErr) {
+        console.warn(`[yt-dlp Direct Sub] Download note for ${videoId}:`, dlErr.message);
       }
+    }
+
+    if (segments && segments.length > 0) {
+      return {
+        segments,
+        language: chosenLang,
+        title: info.title || null,
+        author: info.uploader || info.channel || null,
+        availableTracks: availableLangs.map(l => ({ languageCode: l, name: l })),
+      };
     }
   } catch (err) {
     console.warn(`[yt-dlp Subtitles] Extraction warning for ${videoId}:`, err.message);
@@ -1215,6 +1253,8 @@ app.post('/api/translate', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: `Translation failed: ${err.message}` });
   }
+});
+
 app.get('/api/debug-render', async (req, res) => {
   const videoId = req.query.v || '8t0_xs0399g';
   const out = { videoId };
