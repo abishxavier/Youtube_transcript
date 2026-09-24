@@ -53,6 +53,63 @@ export class TranscriberService {
   }
 
   /**
+   * Parse timedtext XML format (srv3 and classic) into standard segment objects
+   */
+  static parseTimedTextXml(xml) {
+    if (!xml || typeof xml !== 'string') return [];
+    const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+    let match;
+    const segments = [];
+    while ((match = pRegex.exec(xml)) !== null) {
+      const startMs = parseInt(match[1], 10);
+      const durMs = parseInt(match[2], 10);
+      const inner = match[3];
+      let text = '';
+      const sRegex = /<s[^>]*>([^<]*)<\/s>/g;
+      let sMatch;
+      while ((sMatch = sRegex.exec(inner)) !== null) {
+        text += sMatch[1];
+      }
+      if (!text) text = inner.replace(/<[^>]+>/g, '');
+      text = text
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .trim();
+      if (text) {
+        segments.push({
+          text,
+          start: Math.round((startMs / 1000) * 100) / 100,
+          duration: Math.round((durMs / 1000) * 100) / 100,
+        });
+      }
+    }
+    if (segments.length > 0) return segments;
+
+    const textRegex = /<text start="([^"]*)" dur="([^"]*)">([^<]*)<\/text>/g;
+    let tMatch;
+    while ((tMatch = textRegex.exec(xml)) !== null) {
+      const text = tMatch[3]
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .trim();
+      if (text) {
+        segments.push({
+          text,
+          start: Math.round(parseFloat(tMatch[1]) * 100) / 100,
+          duration: Math.round(parseFloat(tMatch[2]) * 100) / 100,
+        });
+      }
+    }
+    return segments;
+  }
+
+  /**
    * Extract Video ID from user input
    */
   static extractVideoId(urlOrId) {
@@ -177,14 +234,88 @@ export class TranscriberService {
       queryParams.append('openaiKey', openaiKey);
     }
 
-    const res = await fetch(AppConfig.apiUrl(`/api/transcript?${queryParams.toString()}`));
-    const { data, error: parseErr } = await TranscriberService.safeParseResponse(res);
+    let res = await fetch(AppConfig.apiUrl(`/api/transcript?${queryParams.toString()}`));
+    let { data, error: parseErr } = await TranscriberService.safeParseResponse(res);
 
-    if (!res.ok || !data) {
+    // 1. If server extracted tracks but needs client-side fetch due to cloud datacenter IP limits
+    if (data && data.needsClientFetch && data.fallbackUrl) {
+      try {
+        const timedRes = await fetch(data.fallbackUrl);
+        if (timedRes.ok) {
+          const xml = await timedRes.text();
+          const segments = TranscriberService.parseTimedTextXml(xml);
+          if (segments && segments.length > 0) {
+            data.transcript = segments;
+            data.isOriginal = true;
+            data.isTranslated = false;
+            delete data.needsClientFetch;
+          }
+        }
+      } catch (cfErr) {
+        console.warn('Client timedtext fetch note:', cfErr.message);
+      }
+    }
+
+    // 2. Fallback: If server failed (404/500), try querying /api/tracks and fetching from client browser
+    if (!res.ok || !data || !data.transcript || data.transcript.length === 0) {
+      try {
+        const tracksRes = await fetch(AppConfig.apiUrl(`/api/tracks?v=${videoId}`));
+        const tracksData = await tracksRes.json();
+        if (tracksData && tracksData.available && Array.isArray(tracksData.tracks) && tracksData.tracks.length > 0) {
+          const targetTrack = (lang && lang !== 'auto' ? tracksData.tracks.find(t => t.languageCode === lang) : null) || tracksData.tracks[0];
+          if (targetTrack && targetTrack.baseUrl) {
+            const timedRes = await fetch(targetTrack.baseUrl);
+            if (timedRes.ok) {
+              const xml = await timedRes.text();
+              const segments = TranscriberService.parseTimedTextXml(xml);
+              if (segments && segments.length > 0) {
+                data = {
+                  videoId,
+                  transcript: segments,
+                  language: targetTrack.languageCode || 'en',
+                  sourceLanguage: targetTrack.languageCode || 'en',
+                  isOriginal: true,
+                  isTranslated: false,
+                };
+                res = { ok: true };
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!res.ok || !data || !data.transcript || data.transcript.length === 0) {
       const errMessage = (data && (data.error || data.message)) || parseErr || 'Could not fetch transcript for this video';
       const err = new Error(errMessage);
       err._body = data || {};
       throw err;
+    }
+
+    // 3. If user requested translation to another language and captions are in source language
+    if (lang && lang !== 'auto' && lang !== data.language) {
+      try {
+        const transRes = await fetch(AppConfig.apiUrl('/api/translate'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            segments: data.transcript,
+            targetLang: lang,
+            sourceLang: data.sourceLanguage || data.language || 'en',
+            mode,
+            apiKey
+          })
+        });
+        if (transRes.ok) {
+          const transJson = await transRes.json();
+          if (transJson.segments && transJson.segments.length > 0) {
+            data.transcript = transJson.segments;
+            data.language = lang;
+            data.isTranslated = true;
+            data.isOriginal = false;
+          }
+        }
+      } catch (_) {}
     }
 
     this.currentData = data;
