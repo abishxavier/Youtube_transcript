@@ -1352,6 +1352,7 @@ app.get('/api/debug-render', async (req, res) => {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AwGgJlbiACGgYIgLCtpgY; PREF=tz=UTC&hl=en;',
       },
       signal: AbortSignal.timeout(6000),
     });
@@ -1359,7 +1360,14 @@ app.get('/api/debug-render', async (req, res) => {
     out.watchPageMs = Date.now() - t0;
     const html = await wpRes.text();
     out.watchPageLen = html.length;
+    out.title = html.match(/<title>(.*?)<\/title>/)?.[1] || null;
     out.hasCaptionTracks = html.includes('captionTracks');
+    out.hasYtInitialPlayerResponse = html.includes('ytInitialPlayerResponse');
+    out.hasCaptions = html.includes('captions');
+    if (html.includes('captionTracks')) {
+      const idx = html.indexOf('captionTracks');
+      out.captionTracksSnippet = html.slice(idx - 10, idx + 100);
+    }
     const tracks = extractJsonArray(html, 'captionTracks');
     out.tracksCount = tracks ? tracks.length : 0;
     if (tracks && tracks.length > 0) {
@@ -1367,6 +1375,24 @@ app.get('/api/debug-render', async (req, res) => {
     }
   } catch (wpErr) {
     out.watchPageError = wpErr.message;
+  }
+
+  // Test 1.5: Embed page fetch
+  try {
+    const epRes = await fetchYouTube(`https://www.youtube.com/embed/${videoId}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+    const epHtml = await epRes.text();
+    out.embedLen = epHtml.length;
+    out.embedHasCaptionTracks = epHtml.includes('captionTracks');
+    const epTracks = extractJsonArray(epHtml, 'captionTracks');
+    out.embedTracksCount = epTracks ? epTracks.length : 0;
+  } catch (epErr) {
+    out.embedError = epErr.message;
   }
 
   // Test 2: InnerTube API
