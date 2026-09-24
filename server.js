@@ -1338,22 +1338,61 @@ app.post('/api/translate', async (req, res) => {
 });
 
 app.get('/api/debug-render', async (req, res) => {
-  const videoId = req.query.v || '8t0_xs0399g';
-  const out = { videoId };
+  const videoId = req.query.v || 'UF8uR6Z6KLc';
+  const out = {
+    videoId,
+    hasProxyEnv: Boolean(rawProxyEnv),
+    proxyUrlsCount: proxyUrls.length,
+  };
+
+  // Test 1: Watch page fetch
   try {
-    const raw = await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
-      dumpSingleJson: true,
-      skipDownload: true,
-      noPlaylist: true,
-      noCacheDir: true,
-      extractorArgs: 'youtube:player_client=android',
+    const t0 = Date.now();
+    const wpRes = await fetchYouTube(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(6000),
     });
-    out.ytdlpSuccess = true;
-    out.automatic_captions = Object.keys(raw.automatic_captions || {});
-    out.subtitles = Object.keys(raw.subtitles || {});
-  } catch (e) {
-    out.ytdlpError = e.message;
+    out.watchPageStatus = wpRes.status;
+    out.watchPageMs = Date.now() - t0;
+    const html = await wpRes.text();
+    out.watchPageLen = html.length;
+    out.hasCaptionTracks = html.includes('captionTracks');
+    const tracks = extractJsonArray(html, 'captionTracks');
+    out.tracksCount = tracks ? tracks.length : 0;
+    if (tracks && tracks.length > 0) {
+      out.track0 = { lang: tracks[0].languageCode, baseUrlSample: tracks[0].baseUrl?.slice(0, 80) };
+    }
+  } catch (wpErr) {
+    out.watchPageError = wpErr.message;
   }
+
+  // Test 2: InnerTube API
+  try {
+    const t0 = Date.now();
+    const itRes = await fetchYouTube('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+      },
+      body: JSON.stringify({
+        context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38', hl: 'en', gl: 'US' } },
+        videoId,
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+    out.innerTubeStatus = itRes.status;
+    out.innerTubeMs = Date.now() - t0;
+    const data = await itRes.json();
+    const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    out.innerTubeTracksCount = tracks ? tracks.length : 0;
+  } catch (itErr) {
+    out.innerTubeError = itErr.message;
+  }
+
   res.json(out);
 });
 
