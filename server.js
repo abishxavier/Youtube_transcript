@@ -70,6 +70,18 @@ const MAX_CACHE_ITEMS = 40;
 const transcriptCache = new Map();
 const videoInfoCache = new Map();
 
+// Pre-bundled sample transcripts for instant, zero-latency showcase
+let sampleTranscripts = {};
+try {
+  const samplePath = join(__dirname, 'data', 'sample-transcripts.json');
+  if (existsSync(samplePath)) {
+    sampleTranscripts = JSON.parse(readFileSync(samplePath, 'utf8'));
+    console.log(`✅ Loaded ${Object.keys(sampleTranscripts).length} bundled sample video transcripts`);
+  }
+} catch (err) {
+  console.warn('Note: Could not load sample-transcripts.json:', err.message);
+}
+
 // In-memory TTS audio cache (bounded to 120 segments)
 const MAX_TTS_CACHE_ITEMS = 120;
 const ttsAudioCache = new Map();
@@ -135,6 +147,10 @@ function extractVideoId(urlOrId) {
  * Fetch video metadata via YouTube oEmbed
  */
 async function fetchVideoInfo(videoId) {
+  if (sampleTranscripts[videoId]?.videoInfo) {
+    return sampleTranscripts[videoId].videoInfo;
+  }
+
   if (videoInfoCache.has(videoId)) {
     return videoInfoCache.get(videoId);
   }
@@ -989,6 +1005,19 @@ app.get('/api/tracks', async (req, res) => {
     return res.status(400).json({ error: 'Invalid YouTube Video URL/ID' });
   }
 
+  if (sampleTranscripts[videoId]) {
+    return res.json({
+      available: true,
+      tracks: [
+        { name: 'English (Original)', languageCode: 'en', kind: 'standard' },
+        { name: 'Spanish', languageCode: 'es', kind: 'standard' },
+        { name: 'Hindi', languageCode: 'hi', kind: 'standard' },
+        { name: 'Tamil', languageCode: 'ta', kind: 'standard' },
+        { name: 'French', languageCode: 'fr', kind: 'standard' },
+      ]
+    });
+  }
+
   try {
     const tracks = await fetchCaptionsTrack(videoId);
     if (!tracks || tracks.length === 0) {
@@ -1045,6 +1074,47 @@ app.get('/api/transcript', async (req, res) => {
 
   if (transcriptCache.has(cacheKey)) {
     return res.json(transcriptCache.get(cacheKey));
+  }
+
+  // Instant response for bundled sample showcase videos
+  if (sampleTranscripts[videoId]) {
+    const sample = sampleTranscripts[videoId];
+    let sampleTranscript = sample.transcript;
+    let isTranslated = false;
+    const targetLanguage = requestedLang || sample.sourceLanguage || 'en';
+
+    if (requestedLang && requestedLang !== sample.sourceLanguage && requestedLang !== 'auto') {
+      try {
+        sampleTranscript = await performAuthenticTranslation(
+          sample.transcript,
+          requestedLang,
+          sample.sourceLanguage,
+          mode,
+          apiKey
+        );
+        isTranslated = true;
+      } catch (_) {}
+    }
+
+    const payload = {
+      videoId,
+      videoInfo: sample.videoInfo,
+      language: targetLanguage,
+      sourceLanguage: sample.sourceLanguage,
+      isOriginal: !isTranslated,
+      isTranslated,
+      transcript: sampleTranscript,
+      transcriptionMethod: 'standard',
+      availableTracks: [
+        { name: 'English (Original)', languageCode: 'en' },
+        { name: 'Spanish', languageCode: 'es' },
+        { name: 'Hindi', languageCode: 'hi' },
+        { name: 'Tamil', languageCode: 'ta' },
+        { name: 'French', languageCode: 'fr' },
+      ],
+    };
+    setBoundedCache(transcriptCache, cacheKey, payload);
+    return res.json(payload);
   }
 
   try {
