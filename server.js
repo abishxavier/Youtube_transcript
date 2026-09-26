@@ -6,10 +6,11 @@ import { fileURLToPath } from 'url';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import ytdl from '@distube/ytdl-core';
 import youtubedl from 'youtube-dl-exec';
-import OpenAI from 'openai';
-import { createReadStream, createWriteStream, writeFileSync, readFileSync, unlinkSync, existsSync } from 'fs';
+import OpenAI, { toFile } from 'openai';
+import { Innertube } from 'youtubei.js';
+import { createReadStream, createWriteStream, writeFileSync, readFileSync, unlinkSync, existsSync, readdirSync, openSync, readSync, closeSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, basename } from 'path';
 
 // Automatically load local .env file if present (Node.js 20.6+ native)
 try {
@@ -282,6 +283,69 @@ function extractJsonArray(html, key) {
   return null;
 }
 
+let innerTubeInstance = null;
+async function getInnertube() {
+  if (!innerTubeInstance) {
+    try {
+      innerTubeInstance = await Innertube.create();
+    } catch (itErr) {
+      console.warn('Innertube.create note:', itErr.message);
+    }
+  }
+  return innerTubeInstance;
+}
+
+/**
+ * Parse raw timedtext XML (srv3 and classic format) into segments
+ */
+function parseTimedTextXml(xml) {
+  if (!xml || typeof xml !== 'string' || xml.trim().length === 0) return null;
+  const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+  let match;
+  const results = [];
+
+  while ((match = pRegex.exec(xml)) !== null) {
+    const startMs = parseInt(match[1], 10);
+    const durMs = parseInt(match[2], 10);
+    const inner = match[3];
+    let text = '';
+    const sRegex = /<s[^>]*>([^<]*)<\/s>/g;
+    let sMatch;
+    while ((sMatch = sRegex.exec(inner)) !== null) {
+      text += sMatch[1];
+    }
+    if (!text) {
+      text = inner.replace(/<[^>]+>/g, '');
+    }
+    text = decodeHtmlEntities(text).trim();
+    if (text) {
+      results.push({
+        text,
+        start: Math.round((startMs / 1000) * 100) / 100,
+        duration: Math.round((durMs / 1000) * 100) / 100,
+      });
+    }
+  }
+
+  if (results.length > 0) return results;
+
+  // Classic format fallback (<text start="s" dur="s">...</text>)
+  const textRegex = /<text start="([^"]*)" dur="([^"]*)">([^<]*)<\/text>/g;
+  let tMatch;
+  while ((tMatch = textRegex.exec(xml)) !== null) {
+    const text = decodeHtmlEntities(tMatch[3]).trim();
+    if (text) {
+      results.push({
+        text,
+        start: Math.round(parseFloat(tMatch[1]) * 100) / 100,
+        duration: Math.round(parseFloat(tMatch[2]) * 100) / 100,
+      });
+    }
+  }
+
+  return results.length > 0 ? results : null;
+}
+
 /**
  * Scrape timedtext caption tracks directly from YouTube video page (Fallback)
  */
@@ -299,6 +363,7 @@ async function fetchCaptionsTrack(videoId) {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AwGgJlbiACGgYIgLCtpgY; PREF=tz=UTC&hl=en;',
       },
       signal: AbortSignal.timeout(6000),
     });
@@ -311,6 +376,27 @@ async function fetchCaptionsTrack(videoId) {
   } catch (err) {
     console.warn(`Direct caption track extraction error for ${videoId}:`, err.message);
   }
+
+  // 3. Tertiary: YouTubeI.js Innertube parser (dynamic tokens & modern client signatures)
+  try {
+    const yt = await getInnertube();
+    if (yt) {
+      const info = await yt.getInfo(videoId).catch(() => null);
+      const rawTracks = info?.captions?.caption_tracks;
+      if (Array.isArray(rawTracks) && rawTracks.length > 0) {
+        return rawTracks.map(t => ({
+          languageCode: t.language_code,
+          name: { simpleText: t.name?.text || t.language_code },
+          baseUrl: t.base_url,
+          vssId: t.vss_id,
+          kind: t.kind,
+        }));
+      }
+    }
+  } catch (itErr) {
+    console.warn(`Innertube caption track extraction note for ${videoId}:`, itErr.message);
+  }
+
   return null;
 }
 
@@ -343,7 +429,6 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
       skipDownload: true,
       noPlaylist: true,
       noCacheDir: true,
-      extractorArgs: 'youtube:player_client=android',
     });
 
     const allSubs = { ...(info.automatic_captions || {}), ...(info.subtitles || {}) };
@@ -351,8 +436,17 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
     if (availableLangs.length === 0) return null;
 
     let chosenLang = preferredLang && allSubs[preferredLang] ? preferredLang : null;
+    if (!chosenLang && info.language && allSubs[info.language]) {
+      chosenLang = info.language;
+    }
     if (!chosenLang) {
-      const priorities = ['hi', 'en', 'es', 'ta', 'te', 'ml', 'kn', 'bn', 'mr', 'gu', 'pa', 'fr', 'de', 'ja', 'ar', 'ru'];
+      const manualLangs = Object.keys(info.subtitles || {});
+      if (manualLangs.length > 0) {
+        chosenLang = manualLangs[0];
+      }
+    }
+    if (!chosenLang) {
+      const priorities = ['en', 'ta', 'hi', 'es', 'te', 'ml', 'kn', 'bn', 'mr', 'gu', 'pa', 'fr', 'de', 'ja', 'ar', 'ru'];
       for (const p of priorities) {
         if (allSubs[p]) { chosenLang = p; break; }
       }
@@ -368,7 +462,14 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
     const format = formats.find(f => f.ext === 'json3') || formats[0];
     if (format && format.url && format.ext === 'json3') {
       try {
-        const res = await fetchYouTube(format.url, { signal: AbortSignal.timeout(6000) });
+        const res = await fetchYouTube(format.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            'Referer': `https://www.youtube.com/watch?v=${videoId}`,
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+          signal: AbortSignal.timeout(6000),
+        });
         if (res.ok) {
           const json = await res.json();
           segments = parseJson3Events(json.events);
@@ -384,17 +485,25 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
           writeSub: true,
           writeAutoSub: true,
           subLang: chosenLang,
-          subFormat: 'json3',
+          subFormat: 'json3/srv1/vtt',
           skipDownload: true,
           noPlaylist: true,
           output: outBase + '.%(ext)s',
-          extractorArgs: 'youtube:player_client=android',
         });
-        const subFile = `${outBase}.${chosenLang}.json3`;
-        if (existsSync(subFile)) {
-          const json = JSON.parse(readFileSync(subFile, 'utf8'));
-          segments = parseJson3Events(json.events);
+        const subFiles = readdirSync(tmpdir()).filter(f => f.startsWith(basename(outBase)));
+        for (const sf of subFiles) {
+          const subFile = join(tmpdir(), sf);
+          try {
+            if (sf.endsWith('.json3')) {
+              const json = JSON.parse(readFileSync(subFile, 'utf8'));
+              segments = parseJson3Events(json.events);
+            } else if (sf.endsWith('.srv1') || sf.endsWith('.srv3') || sf.endsWith('.xml')) {
+              const xml = readFileSync(subFile, 'utf8');
+              segments = parseTimedTextXml(xml);
+            }
+          } catch (_) {}
           try { unlinkSync(subFile); } catch (_) {}
+          if (segments && segments.length > 0) break;
         }
       } catch (dlErr) {
         console.warn(`[yt-dlp Direct Sub] Download note for ${videoId}:`, dlErr.message);
@@ -431,53 +540,7 @@ async function fetchTimedText(baseUrl) {
 
     if (!res.ok) return null;
     const xml = await res.text();
-    if (!xml || xml.trim().length === 0) return null;
-
-    // Parse srv3 format (<p t="ms" d="ms"><s>...</s></p>)
-    const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
-    let match;
-    const results = [];
-
-    while ((match = pRegex.exec(xml)) !== null) {
-      const startMs = parseInt(match[1], 10);
-      const durMs = parseInt(match[2], 10);
-      const inner = match[3];
-      let text = '';
-      const sRegex = /<s[^>]*>([^<]*)<\/s>/g;
-      let sMatch;
-      while ((sMatch = sRegex.exec(inner)) !== null) {
-        text += sMatch[1];
-      }
-      if (!text) {
-        text = inner.replace(/<[^>]+>/g, '');
-      }
-      text = decodeHtmlEntities(text).trim();
-      if (text) {
-        results.push({
-          text,
-          start: Math.round((startMs / 1000) * 100) / 100,
-          duration: Math.round((durMs / 1000) * 100) / 100,
-        });
-      }
-    }
-
-    if (results.length > 0) return results;
-
-    // Classic format fallback (<text start="s" dur="s">...</text>)
-    const textRegex = /<text start="([^"]*)" dur="([^"]*)">([^<]*)<\/text>/g;
-    let tMatch;
-    while ((tMatch = textRegex.exec(xml)) !== null) {
-      const text = decodeHtmlEntities(tMatch[3]).trim();
-      if (text) {
-        results.push({
-          text,
-          start: Math.round(parseFloat(tMatch[1]) * 100) / 100,
-          duration: Math.round(parseFloat(tMatch[2]) * 100) / 100,
-        });
-      }
-    }
-
-    if (results.length > 0) return results;
+    return parseTimedTextXml(xml);
   } catch (err) {
     console.warn('TimedText fetch/parse failed:', err.message);
   }
@@ -799,19 +862,23 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
     baseURL: isGroq ? 'https://api.groq.com/openai/v1' : undefined,
   });
   const model = isGroq ? 'whisper-large-v3' : 'whisper-1';
-  const tmpFile = join(tmpdir(), `yt_audio_${videoId}_${Date.now()}.m4a`);
+  const outBase = join(tmpdir(), `yt_audio_${videoId}_${Date.now()}`);
+  let actualFile = null;
 
   try {
-    console.log(`[Whisper] Downloading audio for ${videoId} using yt-dlp (memory-optimized)...`);
+    console.log(`[Whisper] Downloading audio for ${videoId} using yt-dlp...`);
     try {
       await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
-        format: 'ba[abr<=48]/ba[abr<=64]/ba/best',
-        output: tmpFile,
+        format: '139/139-drc/ba[ext=m4a]/ba[ext=webm]/bestaudio[ext=m4a]/bestaudio',
+        output: outBase + '.%(ext)s',
         noPlaylist: true,
         noCacheDir: true,
-        maxFilesize: '24M',
-        extractorArgs: 'youtube:player_client=android',
+        noPart: true,
       });
+      const candidates = readdirSync(tmpdir()).filter(f => f.startsWith(basename(outBase)));
+      if (candidates.length > 0) {
+        actualFile = join(tmpdir(), candidates[0]);
+      }
     } catch (dlErr) {
       console.warn(`[Whisper] yt-dlp direct failed (${dlErr.message}), trying streaming ytdl-core fallback...`);
       const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`).catch(() => null);
@@ -820,10 +887,10 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
       const audioFormat = audioFormats.find(f => f.container === 'mp4' || f.container === 'webm') || audioFormats[0];
       if (!audioFormat) throw dlErr;
 
-      // Stream directly to file on disk to prevent RAM accumulation
+      actualFile = `${outBase}.m4a`;
       await new Promise((resolve, reject) => {
         const stream = ytdl.downloadFromInfo(info, { format: audioFormat });
-        const fileOut = createWriteStream(tmpFile);
+        const fileOut = createWriteStream(actualFile);
         stream.pipe(fileOut);
         fileOut.on('finish', resolve);
         fileOut.on('error', reject);
@@ -831,10 +898,34 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
       });
     }
 
-    console.log(`[Whisper] Audio ready. Sending to ${isGroq ? 'Groq Whisper Large V3' : 'OpenAI Whisper'}...`);
+    if (!actualFile || !existsSync(actualFile)) {
+      throw new Error('Audio file could not be downloaded for transcription.');
+    }
+
+    const fileSize = existsSync(actualFile) ? readFileSync(actualFile).length : 0;
+    const ext = path.extname(actualFile).slice(1) || 'm4a';
+
+    console.log(`[Whisper] Audio ready (${(fileSize / 1024 / 1024).toFixed(2)} MB). Sending to ${isGroq ? 'Groq Whisper Large V3' : 'OpenAI Whisper'}...`);
+
+    // Memory & Rate-limit safety: If audio > 10MB on Groq free tier, slice first 8MB to prevent gateway timeout / ASPH rate-limit spike
+    let fileToUpload = actualFile;
+    let tempSlicePath = null;
+    if (isGroq && fileSize > 10 * 1024 * 1024) {
+      console.log(`[Whisper] Audio size (${(fileSize / 1024 / 1024).toFixed(2)} MB) exceeds 10MB on Groq free tier. Creating 8MB stream slice for safe processing...`);
+      const sliceSize = 8 * 1024 * 1024;
+      const sliceBuf = Buffer.alloc(sliceSize);
+      const fd = openSync(actualFile, 'r');
+      readSync(fd, sliceBuf, 0, sliceSize, 0);
+      closeSync(fd);
+      tempSlicePath = join(tmpdir(), `slice_${basename(actualFile)}`);
+      writeFileSync(tempSlicePath, sliceBuf);
+      fileToUpload = tempSlicePath;
+    }
+
+    const uploadPayload = await toFile(createReadStream(fileToUpload), `audio.${ext}`);
 
     const whisperOptions = {
-      file: createReadStream(tmpFile),
+      file: uploadPayload,
       model,
       response_format: 'verbose_json',
     };
@@ -843,6 +934,10 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
     }
 
     const whisperResp = await client.audio.transcriptions.create(whisperOptions);
+
+    if (tempSlicePath && existsSync(tempSlicePath)) {
+      try { unlinkSync(tempSlicePath); } catch (_) {}
+    }
 
     const segments = (whisperResp.segments || []).map(seg => ({
       text: decodeHtmlEntities(seg.text.trim()),
@@ -857,7 +952,9 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
     };
   } finally {
     releaseWhisperLock();
-    try { if (existsSync(tmpFile)) unlinkSync(tmpFile); } catch (_) {}
+    if (actualFile && existsSync(actualFile)) {
+      try { unlinkSync(actualFile); } catch (_) {}
+    }
   }
 }
 
@@ -1033,6 +1130,30 @@ app.get('/api/tracks', async (req, res) => {
     res.json({ available: true, tracks: formatted });
   } catch (err) {
     res.json({ available: false, tracks: [], error: err.message });
+  }
+});
+
+/**
+ * 2.5 Timedtext Proxy Endpoint (Bypasses Browser CORS limits for Subtitle XML/JSON)
+ */
+app.get('/api/timedtext-proxy', async (req, res) => {
+  const { url } = req.query;
+  if (!url || !url.startsWith('https://www.youtube.com/api/timedtext')) {
+    return res.status(400).json({ error: 'Invalid or missing timedtext URL' });
+  }
+  try {
+    const upstreamRes = await fetchYouTube(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    const text = await upstreamRes.text();
+    res.setHeader('Content-Type', upstreamRes.headers.get('content-type') || 'text/xml');
+    return res.status(upstreamRes.status).send(text);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -1279,13 +1400,30 @@ app.get('/api/transcript', async (req, res) => {
         if (whisperErr.message === 'NO_AI_KEY' || whisperErr.message === 'NO_OPENAI_KEY') {
           return res.status(404).json({
             error: 'NO_CAPTIONS_AVAILABLE',
-            message: 'This video has no captions and audio transcription could not be completed.',
+            message: 'This video has no captions available and audio transcription requires a Groq or Gemini API key. You can add your free key in Settings.',
             videoId,
           });
         }
-        if (whisperErr.message.includes('unavailable') || whisperErr.message.includes('Private') || whisperErr.message.includes('ERROR: [youtube]')) {
+        if (
+          whisperErr.message.includes('Private video') ||
+          whisperErr.message.includes('This video has been removed') ||
+          whisperErr.message.includes('Video unavailable. This video is private') ||
+          whisperErr.message.includes('This video has been terminated')
+        ) {
           return res.status(404).json({
             error: 'This YouTube video is unavailable or has been removed/made private.',
+            videoId,
+          });
+        }
+        if (whisperErr.status === 429 || whisperErr.message?.includes('Rate limit reached')) {
+          return res.status(429).json({
+            error: 'AI Transcription rate limit reached on Groq free tier. Please wait a few minutes or add a personal Gemini/OpenAI API key in Settings.',
+            videoId,
+          });
+        }
+        if (whisperErr.message?.includes('Sign in to confirm') || whisperErr.message?.includes('bot')) {
+          return res.status(403).json({
+            error: 'YouTube requires bot/sign-in verification for this video. Please try another video or configure an API key in Settings.',
             videoId,
           });
         }

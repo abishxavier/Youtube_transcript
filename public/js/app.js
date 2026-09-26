@@ -511,9 +511,28 @@ async function handleFetchVideo() {
     clearTimeout(whisperMsgTimer);
     console.error('Error fetching video transcript:', err);
     const errBody = err._body || {};
-    if (errBody.requiresOpenAiKey || (err.message && err.message.includes('NO_CAPTIONS_NO_KEY'))) {
+
+    // If video ID is valid, ensure the video player loads so the user can still watch with player captions
+    if (videoId) {
+      transcriber.fetchVideoInfo(videoId).then(vInfo => {
+        if (vInfo && vInfo.title && elements.videoTitle) {
+          elements.videoTitle.textContent = vInfo.title;
+          if (vInfo.author && elements.videoAuthor) elements.videoAuthor.textContent = `by ${vInfo.author}`;
+        }
+      }).catch(() => {});
+      loadVideo('youtube-player-iframe', videoId, {
+        onTimeUpdate: (status) => handlePlaybackTimeUpdate(status),
+      }).catch(playerErr => console.warn('Player fallback note:', playerErr));
+    }
+
+    if (errBody.requiresOpenAiKey || (err.message && err.message.includes('NO_CAPTIONS_NO_KEY')) || (err.message && err.message.includes('NO_CAPTIONS_AVAILABLE'))) {
       showStatusAlert(
-        'This video does not have available captions and audio transcription could not be completed for it. Please try another video.',
+        'This video does not have captions and audio transcription requires an API key. You can add your free Groq or Gemini API key in Settings.',
+        'warning'
+      );
+    } else if (err.message && (err.message.includes('rate limit') || err.message.includes('Rate limit'))) {
+      showStatusAlert(
+        'AI transcription hourly limit reached on Groq free tier. You can watch with YouTube subtitles in the player, or add a Gemini API key in Settings.',
         'warning'
       );
     } else {

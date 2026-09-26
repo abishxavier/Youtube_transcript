@@ -240,10 +240,31 @@ export class TranscriberService {
     // 1. If server extracted tracks but needs client-side fetch due to cloud datacenter IP limits
     if (data && data.needsClientFetch && data.fallbackUrl) {
       try {
-        const timedRes = await fetch(data.fallbackUrl);
-        if (timedRes.ok) {
-          const xml = await timedRes.text();
-          const segments = TranscriberService.parseTimedTextXml(xml);
+        let timedRes = await fetch(data.fallbackUrl).catch(() => null);
+        if (!timedRes || !timedRes.ok) {
+          timedRes = await fetch(AppConfig.apiUrl(`/api/timedtext-proxy?url=${encodeURIComponent(data.fallbackUrl)}`)).catch(() => null);
+        }
+        if (timedRes && timedRes.ok) {
+          const text = await timedRes.text();
+          let segments = [];
+          if (text.startsWith('{')) {
+            try {
+              const j = JSON.parse(text);
+              if (j.events) {
+                segments = j.events
+                  .filter(e => e.segs && Array.isArray(e.segs))
+                  .map(e => ({
+                    text: e.segs.map(s => s.utf8 || '').join('').trim(),
+                    start: Math.round((e.tStartMs / 1000) * 100) / 100,
+                    duration: Math.round(((e.dDurationMs || 2500) / 1000) * 100) / 100,
+                  }))
+                  .filter(s => s.text.length > 0);
+              }
+            } catch (_) {}
+          }
+          if (segments.length === 0) {
+            segments = TranscriberService.parseTimedTextXml(text);
+          }
           if (segments && segments.length > 0) {
             data.transcript = segments;
             data.isOriginal = true;
@@ -264,10 +285,13 @@ export class TranscriberService {
         if (tracksData && tracksData.available && Array.isArray(tracksData.tracks) && tracksData.tracks.length > 0) {
           const targetTrack = (lang && lang !== 'auto' ? tracksData.tracks.find(t => t.languageCode === lang) : null) || tracksData.tracks[0];
           if (targetTrack && targetTrack.baseUrl) {
-            const timedRes = await fetch(targetTrack.baseUrl);
-            if (timedRes.ok) {
-              const xml = await timedRes.text();
-              const segments = TranscriberService.parseTimedTextXml(xml);
+            let timedRes = await fetch(targetTrack.baseUrl).catch(() => null);
+            if (!timedRes || !timedRes.ok) {
+              timedRes = await fetch(AppConfig.apiUrl(`/api/timedtext-proxy?url=${encodeURIComponent(targetTrack.baseUrl)}`)).catch(() => null);
+            }
+            if (timedRes && timedRes.ok) {
+              const text = await timedRes.text();
+              const segments = TranscriberService.parseTimedTextXml(text);
               if (segments && segments.length > 0) {
                 data = {
                   videoId,
