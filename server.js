@@ -1356,6 +1356,30 @@ app.get('/api/transcript', async (req, res) => {
           }
         }
       }
+
+      // CRITICAL: If server-side timedtext fetching failed (Render/cloud datacenter IP blocked by YouTube CDN),
+      // immediately return needsClientFetch so the user's browser fetches the subtitle XML directly.
+      // Browser IPs are never blocked by YouTube CDN — this is the most reliable datacenter bypass.
+      if ((!transcript || transcript.length === 0) && captionTracks.length > 0) {
+        const rawUrl = targetTrack?.baseUrl || captionTracks[0]?.baseUrl || '';
+        if (rawUrl) {
+          const fallbackUrl = rawUrl.includes('&fmt=') ? rawUrl : `${rawUrl}&fmt=srv3`;
+          console.log(`[Captions] Server-side timedtext fetch blocked. Returning needsClientFetch for browser to fetch directly.`);
+          return res.json({
+            videoId,
+            videoInfo,
+            needsClientFetch: true,
+            fallbackUrl,
+            sourceLanguage: detectedSourceLang || captionTracks[0]?.languageCode || 'en',
+            language: requestedLang || captionTracks[0]?.languageCode || 'en',
+            availableTracks: captionTracks.map(t => ({
+              name: t.name?.runs?.[0]?.text || t.name?.simpleText || t.languageCode,
+              languageCode: t.languageCode,
+              baseUrl: t.baseUrl ? (t.baseUrl.includes('&fmt=') ? t.baseUrl : `${t.baseUrl}&fmt=srv3`) : null,
+            })),
+          });
+        }
+      }
     }
 
     // Step 2: Fallback to YoutubeTranscript library across detected & default languages
