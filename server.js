@@ -169,8 +169,19 @@ async function fetchVideoInfo(videoId) {
       };
       setBoundedCache(videoInfoCache, videoId, info);
       return info;
+    } else if (res.status === 404) {
+      const err = new Error('This YouTube video does not exist or has been removed.');
+      err.isUnavailable = true;
+      err.status = 404;
+      throw err;
+    } else if (res.status === 401 || res.status === 403) {
+      const err = new Error('This YouTube video is private or restricted.');
+      err.isUnavailable = true;
+      err.status = res.status;
+      throw err;
     }
   } catch (err) {
+    if (err.isUnavailable) throw err;
     console.warn(`oEmbed fetch failed for ${videoId}:`, err.message);
   }
 
@@ -212,10 +223,19 @@ async function fetchInnerTubeCaptionTracks(videoId) {
     if (resp.ok) {
       const data = await resp.json();
       const playability = data?.playabilityStatus;
-      if (playability && (playability.status === 'ERROR' || playability.status === 'LOGIN_REQUIRED')) {
+      if (playability && (playability.status === 'ERROR' || playability.status === 'LOGIN_REQUIRED' || playability.status === 'UNPLAYABLE')) {
         const reason = playability.reason || 'This video is unavailable';
         const lower = reason.toLowerCase();
-        if (lower.includes('private') || lower.includes('removed') || lower.includes('copyright') || lower.includes('deleted')) {
+        if (
+          lower.includes('private') ||
+          lower.includes('removed') ||
+          lower.includes('copyright') ||
+          lower.includes('deleted') ||
+          lower.includes('unavailable') ||
+          lower.includes("isn't available") ||
+          lower.includes('not available') ||
+          lower.includes('terminated')
+        ) {
           const unavailErr = new Error(`VIDEO_UNAVAILABLE: ${reason}`);
           unavailErr.isUnavailable = true;
           unavailErr.reason = reason;
@@ -425,6 +445,7 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
   try {
     console.log(`[yt-dlp Subtitles] Extracting captions metadata for ${videoId}...`);
     const info = await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+      jsRuntimes: 'node',
       dumpSingleJson: true,
       skipDownload: true,
       noPlaylist: true,
@@ -482,6 +503,7 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
       const outBase = join(tmpdir(), `sub_${videoId}_${Date.now()}`);
       try {
         await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+          jsRuntimes: 'node',
           writeSub: true,
           writeAutoSub: true,
           subLang: chosenLang,
@@ -869,6 +891,7 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
     console.log(`[Whisper] Downloading audio for ${videoId} using yt-dlp...`);
     try {
       await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+        jsRuntimes: 'node',
         format: '139/139-drc/ba[ext=m4a]/ba[ext=webm]/bestaudio[ext=m4a]/bestaudio',
         output: outBase + '.%(ext)s',
         noPlaylist: true,
@@ -1089,6 +1112,9 @@ app.get('/api/video-info', async (req, res) => {
     const info = await fetchVideoInfo(videoId);
     res.json(info);
   } catch (err) {
+    if (err.isUnavailable) {
+      return res.status(err.status || 404).json({ error: err.message, isUnavailable: true });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -1244,13 +1270,24 @@ app.get('/api/transcript', async (req, res) => {
     let availableTracks = [];
     let usedWhisper = false;
 
-    // Pre-fetch video metadata for accurate language identification
-    const videoInfo = await fetchVideoInfo(videoId).catch(() => ({
-      title: 'YouTube Video',
-      author: 'Creator',
-      videoId,
-      thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-    }));
+    // Pre-fetch video metadata for accurate language identification & availability check
+    let videoInfo;
+    try {
+      videoInfo = await fetchVideoInfo(videoId);
+    } catch (infoErr) {
+      if (infoErr.isUnavailable) {
+        return res.status(infoErr.status || 404).json({
+          error: infoErr.message || 'This YouTube video is unavailable or has been removed/made private.',
+          videoId,
+        });
+      }
+      videoInfo = {
+        title: 'YouTube Video',
+        author: 'Creator',
+        videoId,
+        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      };
+    }
     const metaTitle = `${videoInfo?.title || ''} ${videoInfo?.author || ''}`.trim();
     const guessedAudioLang = detectLanguageFromMetadata(metaTitle);
 
@@ -1404,31 +1441,38 @@ app.get('/api/transcript', async (req, res) => {
             videoId,
           });
         }
+        const wMsg = whisperErr.message || '';
         if (
-          whisperErr.message.includes('Private video') ||
-          whisperErr.message.includes('This video has been removed') ||
-          whisperErr.message.includes('Video unavailable. This video is private') ||
-          whisperErr.message.includes('This video has been terminated')
+          wMsg.includes('Private video') ||
+          wMsg.includes('This video has been removed') ||
+          wMsg.includes('Video unavailable') ||
+          wMsg.includes('This video is unavailable') ||
+          wMsg.includes("isn't available anymore") ||
+          wMsg.includes('Requested format is not available') ||
+          wMsg.includes('This video has been terminated') ||
+          wMsg.includes('VIDEO_UNAVAILABLE') ||
+          wMsg.includes('VIDEO_NOT_FOUND')
         ) {
           return res.status(404).json({
             error: 'This YouTube video is unavailable or has been removed/made private.',
             videoId,
           });
         }
-        if (whisperErr.status === 429 || whisperErr.message?.includes('Rate limit reached')) {
+        if (whisperErr.status === 429 || wMsg.includes('Rate limit reached') || wMsg.includes('rate_limit_exceeded')) {
           return res.status(429).json({
             error: 'AI Transcription rate limit reached on Groq free tier. Please wait a few minutes or add a personal Gemini/OpenAI API key in Settings.',
             videoId,
           });
         }
-        if (whisperErr.message?.includes('Sign in to confirm') || whisperErr.message?.includes('bot')) {
+        if (wMsg.includes('Sign in to confirm') || wMsg.includes('bot')) {
           return res.status(403).json({
             error: 'YouTube requires bot/sign-in verification for this video. Please try another video or configure an API key in Settings.',
             videoId,
           });
         }
+        console.error(`[Whisper Error] Details:`, whisperErr);
         return res.status(500).json({
-          error: `Audio transcription failed: ${whisperErr.message}`,
+          error: 'Could not transcribe audio for this video. Captions are not available and audio processing could not be completed.',
           videoId,
         });
       }

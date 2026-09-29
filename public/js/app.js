@@ -512,8 +512,9 @@ async function handleFetchVideo() {
     console.error('Error fetching video transcript:', err);
     const errBody = err._body || {};
 
-    // If video ID is valid, ensure the video player loads so the user can still watch with player captions
-    if (videoId) {
+    // If video ID is valid and not unavailable, load player so user can watch with player captions
+    const isUnavailable = errBody.isUnavailable || err.message?.includes('unavailable') || err.message?.includes('removed') || err.message?.includes('does not exist') || err.message?.includes('private');
+    if (videoId && !isUnavailable) {
       transcriber.fetchVideoInfo(videoId).then(vInfo => {
         if (vInfo && vInfo.title && elements.videoTitle) {
           elements.videoTitle.textContent = vInfo.title;
@@ -536,7 +537,11 @@ async function handleFetchVideo() {
         'warning'
       );
     } else {
-      showStatusAlert(err.message || 'Could not load transcript for this video.', 'error');
+      let displayMsg = err.message || 'Could not load transcript for this video.';
+      if (displayMsg.includes('WARNING:') || displayMsg.includes('HTTP Error') || displayMsg.includes('Requested format is not available')) {
+        displayMsg = 'This YouTube video is unavailable or cannot be transcribed. Please try another video.';
+      }
+      showStatusAlert(displayMsg, 'error');
     }
   } finally {
     showLoading(false);
