@@ -46,6 +46,12 @@ npm start
 ```
 Open your browser at: `http://localhost:3000`
 
+### YouTube sign-in verification
+
+YouTube can block transcript or audio requests from a server with a sign-in verification challenge. For a deployment you control, you can configure a private YouTube cookies file in Netscape format by setting `YOUTUBE_COOKIES_PATH` to its path. On Render, store the file as a secret file (for example, `/etc/secrets/youtube-cookies.txt`) and set the environment variable to that path.
+
+Cookies grant access to your YouTube account. Keep the file private, do not commit it, and do not use cookies for accounts or videos you are not authorized to access. This can help yt-dlp requests but cannot make unavailable or inaccessible videos transcribable.
+
 ---
 
 ## 📁 Project Structure

@@ -33,3 +33,9 @@ Thumbs.db
 
 # MCP artifacts
 .playwright-mcp/
+
+# User Auth & Session Data
+data/users.json
+data/sessions.json
+data/*.tmp*
+cookies.txt

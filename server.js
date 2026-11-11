@@ -8,7 +8,17 @@ import ytdl from '@distube/ytdl-core';
 import youtubedl from 'youtube-dl-exec';
 import OpenAI, { toFile } from 'openai';
 import { Innertube } from 'youtubei.js';
-import { createReadStream, createWriteStream, writeFileSync, readFileSync, unlinkSync, existsSync, readdirSync, openSync, readSync, closeSync } from 'fs';
+import { createReadStream, createWriteStream, writeFileSync, readFileSync, unlinkSync, existsSync, readdirSync, openSync, readSync, closeSync, mkdirSync, statSync } from 'fs';
+import crypto from 'crypto';
+
+// Optional user-supplied YouTube cookies for authorized yt-dlp requests.
+function getYtDlpCookiesOptions() {
+  const cookiePath = process.env.YOUTUBE_COOKIES_PATH || path.join(__dirname, 'cookies.txt');
+  if (existsSync(cookiePath)) {
+    return { cookies: cookiePath };
+  }
+  return {};
+}
 import { tmpdir } from 'os';
 import { join, basename } from 'path';
 
@@ -195,35 +205,90 @@ async function fetchVideoInfo(videoId) {
 }
 
 /**
- * High-Reliability InnerTube API caption extractor (Android client context)
- * Bypasses HTML scraping bot checks and datacenter IP blocks.
+ * High-Reliability InnerTube API caption extractor.
+ * Tries multiple client contexts in order of reliability for datacenter/server IPs:
+ *   1. TV_EMBEDDED  — designed for server-to-server use, rarely triggers bot checks
+ *   2. IOS          — mobile client, usually bypasses verification
+ *   3. ANDROID      — fallback, may require sign-in on some videos
  */
 async function fetchInnerTubeCaptionTracks(videoId) {
-  try {
-    const resp = await fetchYouTube('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
-      },
-      body: JSON.stringify({
-        context: {
-          client: {
-            clientName: 'ANDROID',
-            clientVersion: '20.10.38',
-            hl: 'en',
-            gl: 'US',
-          },
+  // Client configurations ordered by datacenter-friendliness
+  const clients = [
+    {
+      name: 'TV_EMBEDDED',
+      userAgent: 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1',
+      apiKey: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+      context: {
+        client: {
+          clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+          clientVersion: '2.0',
+          hl: 'en',
+          gl: 'US',
         },
-        videoId,
-      }),
-      signal: AbortSignal.timeout(7000),
-    });
+        thirdParty: {
+          embedUrl: 'https://www.youtube.com/',
+        },
+      },
+    },
+    {
+      name: 'IOS',
+      userAgent: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)',
+      apiKey: 'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc',
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '19.45.4',
+          deviceModel: 'iPhone16,2',
+          hl: 'en',
+          gl: 'US',
+        },
+      },
+    },
+    {
+      name: 'ANDROID',
+      userAgent: 'com.google.android.youtube/19.44.33 (Linux; U; Android 14)',
+      apiKey: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+      context: {
+        client: {
+          clientName: 'ANDROID',
+          clientVersion: '19.44.33',
+          androidSdkVersion: 34,
+          hl: 'en',
+          gl: 'US',
+        },
+      },
+    },
+  ];
 
-    if (resp.ok) {
+  for (const clientCfg of clients) {
+    try {
+      const url = `https://www.youtube.com/youtubei/v1/player?key=${clientCfg.apiKey}&prettyPrint=false`;
+      const resp = await fetchYouTube(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': clientCfg.userAgent,
+          'X-YouTube-Client-Name': '1',
+          'X-YouTube-Client-Version': clientCfg.context.client.clientVersion,
+          'Origin': 'https://www.youtube.com',
+          'Referer': 'https://www.youtube.com/',
+        },
+        body: JSON.stringify({
+          context: clientCfg.context,
+          videoId,
+          params: 'CgIIAQ==', // request captions
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!resp.ok) {
+        console.warn(`[InnerTube/${clientCfg.name}] HTTP ${resp.status}, trying next client...`);
+        continue;
+      }
+
       const data = await resp.json();
       const playability = data?.playabilityStatus;
-      if (playability && (playability.status === 'ERROR' || playability.status === 'LOGIN_REQUIRED' || playability.status === 'UNPLAYABLE')) {
+      if (playability && (playability.status === 'ERROR' || playability.status === 'UNPLAYABLE')) {
         const reason = playability.reason || 'This video is unavailable';
         const lower = reason.toLowerCase();
         if (
@@ -241,18 +306,26 @@ async function fetchInnerTubeCaptionTracks(videoId) {
           unavailErr.reason = reason;
           throw unavailErr;
         }
-        console.warn(`[InnerTube] Status ${playability.status} (${reason}). Proceeding to fallbacks...`);
-        return null;
       }
+      // LOGIN_REQUIRED from one client doesn't mean unavailable — try next client
+      if (playability?.status === 'LOGIN_REQUIRED') {
+        console.warn(`[InnerTube/${clientCfg.name}] LOGIN_REQUIRED, trying next client...`);
+        continue;
+      }
+
       const captionTracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
       if (Array.isArray(captionTracks) && captionTracks.length > 0) {
+        console.log(`[InnerTube/${clientCfg.name}] Found ${captionTracks.length} caption track(s).`);
         return captionTracks;
       }
+      // No captions from this client — try next (captions may appear on another client)
+      console.warn(`[InnerTube/${clientCfg.name}] No caption tracks returned.`);
+    } catch (err) {
+      if (err.isUnavailable) throw err;
+      console.warn(`[InnerTube/${clientCfg.name}] Error for ${videoId}:`, err.message);
     }
-  } catch (err) {
-    if (err.isUnavailable) throw err;
-    console.warn(`InnerTube caption fetch error for ${videoId}:`, err.message);
   }
+
   return null;
 }
 
@@ -345,6 +418,7 @@ function parseTimedTextXml(xml) {
         duration: Math.round((durMs / 1000) * 100) / 100,
       });
     }
+
   }
 
   if (results.length > 0) return results;
@@ -437,19 +511,24 @@ function parseJson3Events(events) {
 }
 
 /**
- * Fast & High-Reliability Subtitle Extractor using yt-dlp metadata
- * Bypasses all YouTube bot checks, sign-in walls, and datacenter IP blocks.
+ * Extract subtitle tracks using yt-dlp metadata.
  * Zero media download (skipDownload: true). Fast and memory-safe (~1-2 seconds).
+ * Uses tv_embedded → android → web client order to avoid bot verification challenges.
  */
 async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
   try {
     console.log(`[yt-dlp Subtitles] Extracting captions metadata for ${videoId}...`);
+    // tv_embedded is the most reliable client for server/datacenter IPs — no bot checks.
+    // Fall back to android then web if tv_embedded has no captions for this video.
     const info = await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
       jsRuntimes: 'node',
       dumpSingleJson: true,
       skipDownload: true,
       noPlaylist: true,
       noCacheDir: true,
+      extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+      noCheckCertificates: true,
+      ...getYtDlpCookiesOptions(),
     });
 
     const allSubs = { ...(info.automatic_captions || {}), ...(info.subtitles || {}) };
@@ -498,7 +577,7 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
       } catch (_) {}
     }
 
-    // Method B: Direct yt-dlp subtitle download (bypasses datacenter 403 blocks completely)
+    // Method B: Let yt-dlp retrieve the subtitle file when direct timedtext fetch fails.
     if (!segments || segments.length === 0) {
       const outBase = join(tmpdir(), `sub_${videoId}_${Date.now()}`);
       try {
@@ -511,6 +590,9 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
           skipDownload: true,
           noPlaylist: true,
           output: outBase + '.%(ext)s',
+          extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+          noCheckCertificates: true,
+          ...getYtDlpCookiesOptions(),
         });
         const subFiles = readdirSync(tmpdir()).filter(f => f.startsWith(basename(outBase)));
         for (const sf of subFiles) {
@@ -737,6 +819,179 @@ ${inputLines}`;
 }
 
 /**
+ * Transcribe downloaded audio through Gemini's file upload API.
+ */
+async function transcribeWithGemini(videoId, apiKey) {
+  if (!apiKey) return null;
+
+  const outBase = join(tmpdir(), `gemini_audio_${videoId}_${Date.now()}`);
+  const uploadedFiles = [];
+  let uploadedFileName = null;
+  try {
+    await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
+      jsRuntimes: 'node',
+      format: '139/139-drc/ba[ext=m4a]/ba[ext=webm]/bestaudio[ext=m4a]/bestaudio',
+      output: outBase + '.%(ext)s',
+      noPlaylist: true,
+      noCacheDir: true,
+      extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+      noCheckCertificates: true,
+      ...getYtDlpCookiesOptions(),
+      noPart: true,
+    });
+
+    const audioFiles = readdirSync(tmpdir())
+      .filter(file => file.startsWith(basename(outBase)))
+      .map(file => join(tmpdir(), file));
+    const audioPath = audioFiles.find(file => existsSync(file));
+    uploadedFiles.push(...audioFiles);
+    if (!audioPath) throw new Error('YouTube audio download did not produce an audio file.');
+
+    const mimeType = audioPath.endsWith('.m4a')
+      ? 'audio/mp4'
+      : audioPath.endsWith('.webm')
+        ? 'audio/webm'
+        : 'audio/mpeg';
+    const fileSize = statSync(audioPath).size;
+    const uploadStart = await fetch('https://generativelanguage.googleapis.com/upload/v1beta/files', {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': apiKey,
+        'X-Goog-Upload-Protocol': 'resumable',
+        'X-Goog-Upload-Command': 'start',
+        'X-Goog-Upload-Header-Content-Length': String(fileSize),
+        'X-Goog-Upload-Header-Content-Type': mimeType,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ file: { display_name: basename(audioPath) } }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!uploadStart.ok) {
+      throw new Error(`Gemini file upload setup failed (${uploadStart.status}): ${(await uploadStart.text()).slice(0, 300)}`);
+    }
+
+    const uploadUrl = uploadStart.headers.get('x-goog-upload-url');
+    if (!uploadUrl) throw new Error('Gemini did not return a file upload URL.');
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Length': String(fileSize),
+        'X-Goog-Upload-Offset': '0',
+        'X-Goog-Upload-Command': 'upload, finalize',
+      },
+      body: createReadStream(audioPath),
+      duplex: 'half',
+      signal: AbortSignal.timeout(120000),
+    });
+    if (!uploadResponse.ok) {
+      throw new Error(`Gemini audio upload failed (${uploadResponse.status}): ${(await uploadResponse.text()).slice(0, 300)}`);
+    }
+
+    const fileResult = await uploadResponse.json();
+    let uploadedFile = fileResult.file;
+    uploadedFileName = uploadedFile?.name || null;
+    if (!uploadedFile?.name || !uploadedFile?.uri) {
+      throw new Error('Gemini audio upload returned incomplete file metadata.');
+    }
+
+    for (let attempt = 0; uploadedFile.state === 'PROCESSING' && attempt < 30; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const fileStatus = await fetch(`https://generativelanguage.googleapis.com/v1beta/${uploadedFileName}`, {
+        headers: { 'x-goog-api-key': apiKey },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!fileStatus.ok) {
+        throw new Error(`Gemini audio processing check failed (${fileStatus.status}): ${(await fileStatus.text()).slice(0, 300)}`);
+      }
+      uploadedFile = await fileStatus.json();
+    }
+    if (uploadedFile.state && uploadedFile.state !== 'ACTIVE') {
+      throw new Error(`Gemini could not process the uploaded audio (state: ${uploadedFile.state}).`);
+    }
+
+    const prompt = `Transcribe the spoken audio accurately. Return only a JSON array with this structure:
+[
+  { "start": 0.0, "duration": 3.5, "text": "Exact words spoken here" },
+  { "start": 3.5, "duration": 4.0, "text": "Next spoken words" }
+]
+Rules:
+1. Provide accurate chronological start times and durations in seconds.
+2. Capture the actual spoken dialogue verbatim.
+3. Return only the raw JSON array with no markdown.`;
+
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { fileData: { mimeType: uploadedFile.mimeType || mimeType, fileUri: uploadedFile.uri } },
+          ],
+        }],
+        generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 8192 },
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+    if (!response.ok) {
+      throw new Error(`Gemini transcription failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+    }
+
+    const data = await response.json();
+    const rawJson = data?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('').trim();
+    if (!rawJson) throw new Error('Gemini returned no transcript for the downloaded audio.');
+
+    const parsed = JSON.parse(rawJson);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const segments = parsed
+        .map(segment => ({
+          start: Math.max(0, Math.round((Number(segment.start) || 0) * 100) / 100),
+          duration: Math.max(0.01, Math.round((Number(segment.duration) || 2.5) * 100) / 100),
+          text: decodeHtmlEntities(String(segment.text || '').trim()),
+        }))
+        .filter(segment => segment.text.length > 0);
+      if (segments.length > 0) return segments;
+    }
+    throw new Error('Gemini returned an empty transcript.');
+  } finally {
+    if (uploadedFileName) {
+      const deleteResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${uploadedFileName}`, {
+        method: 'DELETE',
+        headers: { 'x-goog-api-key': apiKey },
+        signal: AbortSignal.timeout(10000),
+      }).catch(err => {
+        console.warn(`[Gemini] Could not delete uploaded audio file: ${err.message}`);
+        return null;
+      });
+      if (deleteResponse && !deleteResponse.ok) {
+        console.warn(`[Gemini] Could not delete uploaded audio file (${deleteResponse.status}).`);
+      }
+    }
+    if (uploadedFiles.length === 0) {
+      try {
+        uploadedFiles.push(...readdirSync(tmpdir())
+          .filter(file => file.startsWith(basename(outBase)))
+          .map(file => join(tmpdir(), file)));
+      } catch (err) {
+        console.warn(`[Gemini] Could not inspect temporary audio files: ${err.message}`);
+      }
+    }
+    for (const audioFile of uploadedFiles) {
+      if (existsSync(audioFile)) {
+        try { unlinkSync(audioFile); } catch (err) {
+          console.warn(`[Gemini] Could not remove temporary audio file: ${err.message}`);
+        }
+      }
+    }
+  }
+}
+
+/**
  * Contextual & Coherent Subtitle Translation Engine (கோர்வையான மொழிபெயர்ப்பு)
  * Groups fragmented speech into full grammatical sentences before translation.
  * Translates each full thought with complete context, preserving natural flow and meaning.
@@ -896,6 +1151,9 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
         output: outBase + '.%(ext)s',
         noPlaylist: true,
         noCacheDir: true,
+        extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+        noCheckCertificates: true,
+        ...getYtDlpCookiesOptions(),
         noPart: true,
       });
       const candidates = readdirSync(tmpdir()).filter(f => f.startsWith(basename(outBase)));
@@ -919,6 +1177,32 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
         fileOut.on('error', reject);
         stream.on('error', reject);
       });
+    }
+
+    // Innertube mobile client streaming audio download fallback
+    if (!actualFile || !existsSync(actualFile)) {
+      try {
+        console.log(`[Whisper] Trying Innertube streaming audio fallback for ${videoId}...`);
+        const yt = await getInnertube();
+        const stream = await yt.download(videoId, {
+          type: 'audio',
+          quality: 'best',
+          format: 'mp4',
+        });
+        actualFile = `${outBase}.m4a`;
+        const fileOut = createWriteStream(actualFile);
+        for await (const chunk of stream) {
+          fileOut.write(chunk);
+        }
+        fileOut.end();
+        await new Promise((resolve, reject) => {
+          fileOut.on('finish', resolve);
+          fileOut.on('error', reject);
+        });
+        console.log(`[Whisper] Innertube audio downloaded successfully for ${videoId}`);
+      } catch (innerErr) {
+        console.warn(`[Whisper] Innertube audio download fallback error:`, innerErr.message);
+      }
     }
 
     if (!actualFile || !existsSync(actualFile)) {
@@ -996,8 +1280,344 @@ app.get('/api/server-config', (req, res) => {
     hasGroqApiKey: Boolean(process.env.GROQ_API_KEY),
     hasGeminiApiKey: Boolean(process.env.GEMINI_API_KEY),
     hasOpenAiApiKey: Boolean(process.env.OPENAI_API_KEY),
+    hasYoutubeCookies: Boolean(existsSync(process.env.YOUTUBE_COOKIES_PATH || path.join(__dirname, 'cookies.txt'))),
     hasTtsAudio: true,
+    authEnabled: true,
   });
+});
+
+// ====================================================
+// USER AUTHENTICATION & DATA STORAGE
+// ====================================================
+const DATA_DIR = path.join(__dirname, 'data');
+if (!existsSync(DATA_DIR)) {
+  try { mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
+}
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+
+function readJsonFile(filePath, defaultValue) {
+  try {
+    if (!existsSync(filePath)) return defaultValue;
+    const data = readFileSync(filePath, 'utf8');
+    return JSON.parse(data || JSON.stringify(defaultValue));
+  } catch (err) {
+    console.error(`[Auth] Error reading ${filePath}:`, err.message);
+    return defaultValue;
+  }
+}
+
+function writeJsonFile(filePath, data) {
+  try {
+    const tmpPath = `${filePath}.tmp_${Date.now()}`;
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+    writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    try { unlinkSync(tmpPath); } catch (_) {}
+    return true;
+  } catch (err) {
+    console.error(`[Auth] Error writing ${filePath}:`, err.message);
+    return false;
+  }
+}
+
+function getUsers() {
+  return readJsonFile(USERS_FILE, []);
+}
+
+function saveUsers(users) {
+  return writeJsonFile(USERS_FILE, users);
+}
+
+function getSessions() {
+  const sessions = readJsonFile(SESSIONS_FILE, []);
+  const now = Date.now();
+  return sessions.filter(s => s && s.expiresAt > now);
+}
+
+function saveSessions(sessions) {
+  return writeJsonFile(SESSIONS_FILE, sessions);
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex');
+}
+
+function verifyPassword(password, salt, expectedHash) {
+  try {
+    const hash = hashPassword(password, salt);
+    const bufA = Buffer.from(hash, 'hex');
+    const bufB = Buffer.from(expectedHash, 'hex');
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
+function cleanUserObject(user) {
+  if (!user) return null;
+  const { salt, passwordHash, ...clean } = user;
+  return clean;
+}
+
+function authenticateUser(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+  }
+  const token = authHeader.split(' ')[1];
+  const sessions = getSessions();
+  const session = sessions.find(s => s.token === token);
+  if (!session) {
+    return res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
+  }
+  const users = getUsers();
+  const user = users.find(u => u.id === session.userId);
+  if (!user) {
+    return res.status(401).json({ error: 'User account not found.' });
+  }
+  req.user = user;
+  req.sessionToken = token;
+  next();
+}
+
+// ---------------- AUTH ROUTES ----------------
+
+// Register a new user
+app.post('/api/auth/register', (req, res) => {
+  try {
+    const { name, email, password } = req.body || {};
+
+    if (!name || typeof name !== 'string' || name.trim().length < 2) {
+      return res.status(400).json({ error: 'Please enter a valid full name (at least 2 characters).' });
+    }
+    if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const users = getUsers();
+    const existing = users.find(u => u.email.toLowerCase() === cleanEmail);
+    if (existing) {
+      return res.status(409).json({ error: 'An account with this email address already exists. Please sign in.' });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = hashPassword(password, salt);
+    const newUser = {
+      id: 'usr_' + crypto.randomBytes(8).toString('hex'),
+      name: name.trim(),
+      email: cleanEmail,
+      salt,
+      passwordHash,
+      createdAt: new Date().toISOString(),
+      role: 'user',
+      preferences: {
+        preferredLang: 'auto',
+      },
+      savedTranscripts: [],
+    };
+
+    users.push(newUser);
+    saveUsers(users);
+
+    const token = 'tok_' + crypto.randomBytes(32).toString('hex');
+    const session = {
+      token,
+      userId: newUser.id,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + (30 * 24 * 60 * 60 * 1000), // 30 days
+    };
+    const sessions = getSessions();
+    sessions.push(session);
+    saveSessions(sessions);
+
+    console.log(`[Auth] Registered new user: ${cleanEmail}`);
+    return res.status(201).json({
+      success: true,
+      message: 'Account created successfully!',
+      token,
+      user: cleanUserObject(newUser),
+    });
+  } catch (err) {
+    console.error('[Auth Register Error]:', err);
+    return res.status(500).json({ error: 'Registration failed due to a server error. Please try again.' });
+  }
+});
+
+// User Login
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Please provide both email and password.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const users = getUsers();
+    const user = users.find(u => u.email.toLowerCase() === cleanEmail);
+    if (!user || !verifyPassword(password, user.salt, user.passwordHash)) {
+      return res.status(401).json({ error: 'Incorrect email or password.' });
+    }
+
+    const token = 'tok_' + crypto.randomBytes(32).toString('hex');
+    const session = {
+      token,
+      userId: user.id,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + (30 * 24 * 60 * 60 * 1000),
+    };
+    const sessions = getSessions();
+    sessions.push(session);
+    saveSessions(sessions);
+
+    console.log(`[Auth] User signed in: ${cleanEmail}`);
+    return res.json({
+      success: true,
+      message: 'Signed in successfully!',
+      token,
+      user: cleanUserObject(user),
+    });
+  } catch (err) {
+    console.error('[Auth Login Error]:', err);
+    return res.status(500).json({ error: 'Sign in failed due to a server error.' });
+  }
+});
+
+// Current User Profile
+app.get('/api/auth/me', authenticateUser, (req, res) => {
+  return res.json({
+    success: true,
+    user: cleanUserObject(req.user),
+  });
+});
+
+// Sign Out
+app.post('/api/auth/logout', authenticateUser, (req, res) => {
+  try {
+    const sessions = getSessions().filter(s => s.token !== req.sessionToken);
+    saveSessions(sessions);
+    return res.json({ success: true, message: 'Signed out successfully' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+// Update Profile & Preferences
+app.post('/api/auth/update-profile', authenticateUser, (req, res) => {
+  try {
+    const { name, preferences } = req.body || {};
+    const users = getUsers();
+    const userIndex = users.findIndex(u => u.id === req.user.id);
+    if (userIndex === -1) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (name && typeof name === 'string' && name.trim().length >= 2) {
+      users[userIndex].name = name.trim();
+    }
+    if (preferences && typeof preferences === 'object') {
+      users[userIndex].preferences = {
+        ...(users[userIndex].preferences || {}),
+        ...preferences,
+      };
+    }
+
+    saveUsers(users);
+    return res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: cleanUserObject(users[userIndex]),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// Get User's Saved Transcripts
+app.get('/api/auth/saved-transcripts', authenticateUser, (req, res) => {
+  return res.json({
+    success: true,
+    savedTranscripts: req.user.savedTranscripts || [],
+  });
+});
+
+// Save a Transcript to User Account
+app.post('/api/auth/save-transcript', authenticateUser, (req, res) => {
+  try {
+    const { videoId, title, author, language, segmentCount, summary, segments } = req.body || {};
+    if (!videoId) {
+      return res.status(400).json({ error: 'Missing videoId' });
+    }
+
+    const users = getUsers();
+    const userIndex = users.findIndex(u => u.id === req.user.id);
+    if (userIndex === -1) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const saved = users[userIndex].savedTranscripts || [];
+    const existingIndex = saved.findIndex(item => item.videoId === videoId);
+
+    const savedItem = {
+      id: 'st_' + (existingIndex >= 0 ? saved[existingIndex].id : crypto.randomBytes(6).toString('hex')),
+      videoId,
+      title: title || 'YouTube Video',
+      author: author || 'Unknown Creator',
+      language: language || 'en',
+      segmentCount: segmentCount || (segments ? segments.length : 0),
+      summary: summary || null,
+      savedAt: new Date().toISOString(),
+      thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    };
+
+    if (existingIndex >= 0) {
+      saved[existingIndex] = savedItem;
+    } else {
+      saved.unshift(savedItem);
+      if (saved.length > 100) saved.pop();
+    }
+
+    users[userIndex].savedTranscripts = saved;
+    saveUsers(users);
+
+    return res.json({
+      success: true,
+      message: 'Transcript saved to your account!',
+      savedTranscripts: saved,
+      savedItem,
+    });
+  } catch (err) {
+    console.error('[Save Transcript Error]:', err);
+    return res.status(500).json({ error: 'Failed to save transcript' });
+  }
+});
+
+// Delete a Saved Transcript
+app.delete('/api/auth/saved-transcripts/:videoId', authenticateUser, (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const users = getUsers();
+    const userIndex = users.findIndex(u => u.id === req.user.id);
+    if (userIndex === -1) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const saved = (users[userIndex].savedTranscripts || []).filter(item => item.videoId !== videoId);
+    users[userIndex].savedTranscripts = saved;
+    saveUsers(users);
+
+    return res.json({
+      success: true,
+      message: 'Transcript removed from saved items',
+      savedTranscripts: saved,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to remove saved transcript' });
+  }
 });
 
 // Debug Endpoint for diagnosing Render network/IP responses
@@ -1409,7 +2029,7 @@ app.get('/api/transcript', async (req, res) => {
       }
     }
 
-    // Step 2.5: High-Reliability yt-dlp Subtitle Extraction (Bypasses Datacenter / Cloud Blocks)
+    // Step 2.5: Try yt-dlp subtitle extraction when the other caption sources fail.
     if (!transcript || transcript.length === 0) {
       try {
         const ytdlpSubs = await fetchCaptionsWithYtDlp(videoId, requestedLang || guessedAudioLang);
@@ -1429,6 +2049,7 @@ app.get('/api/transcript', async (req, res) => {
     // Step 3: Whisper AI Audio Transcription Fallback (when no captions exist)
     if (!transcript || transcript.length === 0) {
       const customAiKey = req.query.aiKey || req.query.groqKey || req.query.openaiKey || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY;
+      const geminiKey = apiKey || process.env.GEMINI_API_KEY;
 
       try {
         console.log(`[Whisper] No captions for ${videoId}. Falling back to Whisper AI...`);
@@ -1458,47 +2079,66 @@ app.get('/api/transcript', async (req, res) => {
           });
         }
 
-        if (whisperErr.message === 'NO_AI_KEY' || whisperErr.message === 'NO_OPENAI_KEY') {
-          return res.status(404).json({
-            error: 'NO_CAPTIONS_AVAILABLE',
-            message: 'This video has no captions available and audio transcription requires a Groq or Gemini API key. You can add your free key in Settings.',
+        if (geminiKey) {
+          try {
+            console.log(`[Gemini Fallback] Whisper transcription failed (${whisperErr.message}). Trying Gemini audio transcription for ${videoId}...`);
+            const geminiSegments = await transcribeWithGemini(videoId, geminiKey);
+            if (geminiSegments && geminiSegments.length > 0) {
+              transcript = geminiSegments;
+              detectedSourceLang = guessedAudioLang || 'en';
+              usedWhisper = true;
+              console.log(`[Gemini Fallback] Transcribed ${transcript.length} segments.`);
+            }
+          } catch (gErr) {
+            console.warn(`[Gemini Fallback] Gemini audio transcription note:`, gErr.message);
+            whisperErr.geminiError = gErr.message;
+          }
+        }
+
+        // If Gemini succeeded, skip all error handling below
+        if (!transcript || transcript.length === 0) {
+          if ((whisperErr.message === 'NO_AI_KEY' || whisperErr.message === 'NO_OPENAI_KEY') && !geminiKey) {
+            return res.status(404).json({
+              error: 'NO_CAPTIONS_AVAILABLE',
+              message: 'This video has no captions available and audio transcription requires a Groq or Gemini API key. You can add your free key in Settings.',
+              videoId,
+            });
+          }
+          const wMsg = [whisperErr.message, whisperErr.geminiError].filter(Boolean).join('\n');
+          if (
+            wMsg.includes('Private video') ||
+            wMsg.includes('This video has been removed') ||
+            wMsg.includes('Video unavailable') ||
+            wMsg.includes('This video is unavailable') ||
+            wMsg.includes("isn't available anymore") ||
+            wMsg.includes('Requested format is not available') ||
+            wMsg.includes('This video has been terminated') ||
+            wMsg.includes('VIDEO_UNAVAILABLE') ||
+            wMsg.includes('VIDEO_NOT_FOUND')
+          ) {
+            return res.status(404).json({
+              error: 'This YouTube video is unavailable or has been removed/made private.',
+              videoId,
+            });
+          }
+          if (whisperErr.status === 429 || wMsg.includes('Rate limit reached') || wMsg.includes('rate_limit_exceeded')) {
+            return res.status(429).json({
+              error: 'AI Transcription rate limit reached on Groq free tier. Please wait a few minutes or add a personal Gemini/OpenAI API key in Settings.',
+              videoId,
+            });
+          }
+          if (/sign in to confirm|not a bot|bot verification|bot check/i.test(wMsg)) {
+            return res.status(403).json({
+              error: 'YouTube blocked the server request with a sign-in verification challenge. Configure an authorized cookies file with YOUTUBE_COOKIES_PATH, or try a public video with captions.',
+              videoId,
+            });
+          }
+          console.error('[Whisper Error] Details:', whisperErr);
+          return res.status(500).json({
+            error: 'Could not transcribe audio for this video. Captions are not available and audio processing could not be completed.',
             videoId,
           });
         }
-        const wMsg = whisperErr.message || '';
-        if (
-          wMsg.includes('Private video') ||
-          wMsg.includes('This video has been removed') ||
-          wMsg.includes('Video unavailable') ||
-          wMsg.includes('This video is unavailable') ||
-          wMsg.includes("isn't available anymore") ||
-          wMsg.includes('Requested format is not available') ||
-          wMsg.includes('This video has been terminated') ||
-          wMsg.includes('VIDEO_UNAVAILABLE') ||
-          wMsg.includes('VIDEO_NOT_FOUND')
-        ) {
-          return res.status(404).json({
-            error: 'This YouTube video is unavailable or has been removed/made private.',
-            videoId,
-          });
-        }
-        if (whisperErr.status === 429 || wMsg.includes('Rate limit reached') || wMsg.includes('rate_limit_exceeded')) {
-          return res.status(429).json({
-            error: 'AI Transcription rate limit reached on Groq free tier. Please wait a few minutes or add a personal Gemini/OpenAI API key in Settings.',
-            videoId,
-          });
-        }
-        if (wMsg.includes('Sign in to confirm') || wMsg.includes('bot')) {
-          return res.status(403).json({
-            error: 'YouTube requires bot/sign-in verification for this video. Please try another video or configure an API key in Settings.',
-            videoId,
-          });
-        }
-        console.error(`[Whisper Error] Details:`, whisperErr);
-        return res.status(500).json({
-          error: 'Could not transcribe audio for this video. Captions are not available and audio processing could not be completed.',
-          videoId,
-        });
       }
     }
 

@@ -7,6 +7,7 @@ import { TranscriberService } from './transcriber.js';
 import { Exporter } from './exporter.js';
 import { SummaryService } from './summary.js';
 import { AudioDubbingManager } from './dubber.js';
+import { auth } from './auth.js';
 
 // Application State
 const state = {
@@ -39,6 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLanguageSelectors();
   initSettings();
   initDubbingControls();
+  initAuth();
   fetchServerConfig();
   bindEvents();
   checkUrlParams();
@@ -133,7 +135,45 @@ function cacheDOMElements() {
     dubbingVolSlider: document.getElementById('dubbing-vol-slider'),
     dubbingVolVal: document.getElementById('dubbing-vol-val'),
     testVoiceBtn: document.getElementById('test-voice-btn'),
-    downloadAudioBtn: document.getElementById('download-audio-btn'),
+        downloadAudioBtn: document.getElementById('download-audio-btn'),
+
+    // User Authentication & Saved Transcripts
+    authNavBtn: document.getElementById('auth-nav-btn'),
+    userMenuWrapper: document.getElementById('user-menu-wrapper'),
+    userProfileBtn: document.getElementById('user-profile-btn'),
+    userAvatarChip: document.getElementById('user-avatar-chip'),
+    userNameDisplay: document.getElementById('user-name-display'),
+    userDropdownMenu: document.getElementById('user-dropdown-menu'),
+    dropdownUserName: document.getElementById('dropdown-user-name'),
+    dropdownUserEmail: document.getElementById('dropdown-user-email'),
+    navSavedBtn: document.getElementById('nav-saved-btn'),
+    navSettingsBtn: document.getElementById('nav-settings-btn'),
+    navLogoutBtn: document.getElementById('nav-logout-btn'),
+    authModal: document.getElementById('auth-modal'),
+    closeAuthModalBtn: document.getElementById('close-auth-modal'),
+    authModalTitle: document.getElementById('auth-modal-title'),
+    authTabLogin: document.getElementById('auth-tab-login'),
+    authTabRegister: document.getElementById('auth-tab-register'),
+    authAlertBox: document.getElementById('auth-alert-box'),
+    authLoginForm: document.getElementById('auth-login-form'),
+    loginEmailInput: document.getElementById('login-email'),
+    loginPasswordInput: document.getElementById('login-password'),
+    loginRememberMe: document.getElementById('login-remember-me'),
+    loginSubmitBtn: document.getElementById('login-submit-btn'),
+    switchToSignupLink: document.getElementById('switch-to-signup-link'),
+    authRegisterForm: document.getElementById('auth-register-form'),
+    registerNameInput: document.getElementById('register-name'),
+    registerEmailInput: document.getElementById('register-email'),
+    registerPasswordInput: document.getElementById('register-password'),
+    registerConfirmPasswordInput: document.getElementById('register-confirm-password'),
+    registerSubmitBtn: document.getElementById('register-submit-btn'),
+    switchToSigninLink: document.getElementById('switch-to-signin-link'),
+    saveTranscriptBtn: document.getElementById('save-transcript-btn'),
+    savedTranscriptsModal: document.getElementById('saved-transcripts-modal'),
+    closeSavedModalBtn: document.getElementById('close-saved-modal'),
+    savedLoadingState: document.getElementById('saved-loading-state'),
+    savedEmptyState: document.getElementById('saved-empty-state'),
+    savedTranscriptsContainer: document.getElementById('saved-transcripts-container'),
   };
 }
 
@@ -343,6 +383,11 @@ function bindEvents() {
     if (e.target === elements.settingsModal) elements.settingsModal.classList.remove('active');
     if (e.target === elements.exportModal) elements.exportModal.classList.remove('active');
     if (e.target === elements.summaryModal) elements.summaryModal.classList.remove('active');
+    if (e.target === elements.authModal) elements.authModal.classList.remove('active');
+    if (e.target === elements.savedTranscriptsModal) elements.savedTranscriptsModal.classList.remove('active');
+    if (elements.userDropdownMenu && !elements.userProfileBtn?.contains(e.target) && !elements.userDropdownMenu.contains(e.target)) {
+      elements.userDropdownMenu.classList.remove('active');
+    }
   });
 }
 
@@ -534,6 +579,11 @@ async function handleFetchVideo() {
     } else if (err.message && (err.message.includes('rate limit') || err.message.includes('Rate limit'))) {
       showStatusAlert(
         'AI transcription hourly limit reached on Groq free tier. You can watch with YouTube subtitles in the player, or add a Gemini API key in Settings.',
+        'warning'
+      );
+    } else if (err.message && (err.message.includes('sign-in verification') || err.message.includes('bot verification') || err.message.includes('Sign in to confirm') || err.message.includes('cookies file') || err.message.includes('YOUTUBE_COOKIES_PATH'))) {
+      showStatusAlert(
+        'YouTube is blocking server access for this video. Try a video that has captions enabled, or add a Gemini API key in Settings for AI-powered transcription.',
         'warning'
       );
     } else {
@@ -1144,4 +1194,390 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+// ==========================================================================
+// USER AUTHENTICATION & SAVED TRANSCRIPTS CONTROLLER
+// ==========================================================================
+
+function initAuth() {
+  // Listen for user auth state updates
+  auth.onAuthStateChanged((user, isLoggedIn) => {
+    updateAuthUI(user, isLoggedIn);
+  });
+
+  // Verify token on server on app load
+  auth.checkCurrentSession();
+
+  // Open Auth Modal
+  if (elements.authNavBtn) {
+    elements.authNavBtn.addEventListener('click', () => {
+      openAuthModal('login');
+    });
+  }
+
+  // Close Auth Modal
+  if (elements.closeAuthModalBtn) {
+    elements.closeAuthModalBtn.addEventListener('click', () => {
+      if (elements.authModal) elements.authModal.classList.remove('active');
+    });
+  }
+
+  // Toggle User Profile Dropdown
+  if (elements.userProfileBtn) {
+    elements.userProfileBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (elements.userDropdownMenu) {
+        elements.userDropdownMenu.classList.toggle('active');
+      }
+    });
+  }
+
+  // Dropdown: Settings
+  if (elements.navSettingsBtn) {
+    elements.navSettingsBtn.addEventListener('click', () => {
+      if (elements.userDropdownMenu) elements.userDropdownMenu.classList.remove('active');
+      if (elements.settingsModal) elements.settingsModal.classList.add('active');
+    });
+  }
+
+  // Dropdown: Saved Transcripts
+  if (elements.navSavedBtn) {
+    elements.navSavedBtn.addEventListener('click', () => {
+      if (elements.userDropdownMenu) elements.userDropdownMenu.classList.remove('active');
+      openSavedTranscriptsModal();
+    });
+  }
+
+  // Dropdown: Logout
+  if (elements.navLogoutBtn) {
+    elements.navLogoutBtn.addEventListener('click', async () => {
+      if (elements.userDropdownMenu) elements.userDropdownMenu.classList.remove('active');
+      await auth.logout();
+      showToast('Signed out successfully', 'info');
+    });
+  }
+
+  // Auth Tabs
+  if (elements.authTabLogin) {
+    elements.authTabLogin.addEventListener('click', () => switchAuthTab('login'));
+  }
+  if (elements.authTabRegister) {
+    elements.authTabRegister.addEventListener('click', () => switchAuthTab('register'));
+  }
+  if (elements.switchToSignupLink) {
+    elements.switchToSignupLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      switchAuthTab('register');
+    });
+  }
+  if (elements.switchToSigninLink) {
+    elements.switchToSigninLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      switchAuthTab('login');
+    });
+  }
+
+  // Sign In Form Submission
+  if (elements.authLoginForm) {
+    elements.authLoginForm.addEventListener('submit', handleLoginSubmit);
+  }
+
+  // Register Form Submission
+  if (elements.authRegisterForm) {
+    elements.authRegisterForm.addEventListener('submit', handleRegisterSubmit);
+  }
+
+  // Save Transcript Button in toolbar
+  if (elements.saveTranscriptBtn) {
+    elements.saveTranscriptBtn.addEventListener('click', handleSaveCurrentTranscript);
+  }
+
+  // Close Saved Transcripts Modal
+  if (elements.closeSavedModalBtn) {
+    elements.closeSavedModalBtn.addEventListener('click', () => {
+      if (elements.savedTranscriptsModal) elements.savedTranscriptsModal.classList.remove('active');
+    });
+  }
+}
+
+function openAuthModal(mode = 'login') {
+  switchAuthTab(mode);
+  clearAuthAlert();
+  if (elements.authModal) {
+    elements.authModal.classList.add('active');
+  }
+}
+
+function switchAuthTab(tab) {
+  clearAuthAlert();
+  if (tab === 'register') {
+    if (elements.authTabLogin) elements.authTabLogin.classList.remove('active');
+    if (elements.authTabRegister) elements.authTabRegister.classList.add('active');
+    if (elements.authLoginForm) elements.authLoginForm.style.display = 'none';
+    if (elements.authRegisterForm) elements.authRegisterForm.style.display = 'flex';
+    if (elements.authModalTitle) elements.authModalTitle.textContent = 'Create Free TranscribeX Account';
+    if (elements.registerNameInput) elements.registerNameInput.focus();
+  } else {
+    if (elements.authTabRegister) elements.authTabRegister.classList.remove('active');
+    if (elements.authTabLogin) elements.authTabLogin.classList.add('active');
+    if (elements.authRegisterForm) elements.authRegisterForm.style.display = 'none';
+    if (elements.authLoginForm) elements.authLoginForm.style.display = 'flex';
+    if (elements.authModalTitle) elements.authModalTitle.textContent = 'Sign In to TranscribeX Pro';
+    if (elements.loginEmailInput) elements.loginEmailInput.focus();
+  }
+}
+
+function showAuthAlert(message, type = 'error') {
+  if (!elements.authAlertBox) return;
+  elements.authAlertBox.textContent = message;
+  elements.authAlertBox.className = `auth-alert ${type}`;
+  elements.authAlertBox.style.display = 'block';
+}
+
+function clearAuthAlert() {
+  if (!elements.authAlertBox) return;
+  elements.authAlertBox.textContent = '';
+  elements.authAlertBox.style.display = 'none';
+}
+
+async function handleLoginSubmit(e) {
+  e.preventDefault();
+  const email = elements.loginEmailInput?.value?.trim();
+  const password = elements.loginPasswordInput?.value;
+  const remember = elements.loginRememberMe?.checked ?? true;
+
+  if (!email || !password) {
+    showAuthAlert('Please fill in both email and password.');
+    return;
+  }
+
+  const btn = elements.loginSubmitBtn;
+  const originalText = btn ? btn.textContent : 'Sign In';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Signing In...';
+  }
+
+  try {
+    const res = await auth.login(email, password, remember);
+    if (elements.authModal) elements.authModal.classList.remove('active');
+    showToast(`Welcome back, ${res.user.name || 'User'}!`, 'success');
+    if (elements.authLoginForm) elements.authLoginForm.reset();
+  } catch (err) {
+    showAuthAlert(err.message || 'Login failed. Please check your credentials.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
+async function handleRegisterSubmit(e) {
+  e.preventDefault();
+  const name = elements.registerNameInput?.value?.trim();
+  const email = elements.registerEmailInput?.value?.trim();
+  const password = elements.registerPasswordInput?.value;
+  const confirmPassword = elements.registerConfirmPasswordInput?.value;
+
+  if (!name || name.length < 2) {
+    showAuthAlert('Please enter your full name (minimum 2 letters).');
+    return;
+  }
+  if (!email || !email.includes('@')) {
+    showAuthAlert('Please enter a valid email address.');
+    return;
+  }
+  if (!password || password.length < 6) {
+    showAuthAlert('Password must be at least 6 characters long.');
+    return;
+  }
+  if (password !== confirmPassword) {
+    showAuthAlert('Passwords do not match. Please re-enter.');
+    return;
+  }
+
+  const btn = elements.registerSubmitBtn;
+  const originalText = btn ? btn.textContent : 'Create Account';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Creating Account...';
+  }
+
+  try {
+    const res = await auth.register(name, email, password);
+    if (elements.authModal) elements.authModal.classList.remove('active');
+    showToast(`Account created! Welcome, ${res.user.name}!`, 'success');
+    if (elements.authRegisterForm) elements.authRegisterForm.reset();
+  } catch (err) {
+    showAuthAlert(err.message || 'Registration failed.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
+function updateAuthUI(user, isLoggedIn) {
+  if (isLoggedIn && user) {
+    if (elements.authNavBtn) elements.authNavBtn.style.display = 'none';
+    if (elements.userMenuWrapper) elements.userMenuWrapper.style.display = 'inline-block';
+    if (elements.userNameDisplay) elements.userNameDisplay.textContent = user.name || 'User';
+    if (elements.dropdownUserName) elements.dropdownUserName.textContent = user.name || 'User';
+    if (elements.dropdownUserEmail) elements.dropdownUserEmail.textContent = user.email || '';
+    if (elements.userAvatarChip) elements.userAvatarChip.textContent = auth.getUserInitials();
+  } else {
+    if (elements.authNavBtn) elements.authNavBtn.style.display = 'inline-flex';
+    if (elements.userMenuWrapper) elements.userMenuWrapper.style.display = 'none';
+    if (elements.userDropdownMenu) elements.userDropdownMenu.classList.remove('active');
+  }
+}
+
+async function handleSaveCurrentTranscript() {
+  if (!auth.isLoggedIn()) {
+    showToast('Please sign in or register to save transcripts', 'info');
+    openAuthModal('register');
+    return;
+  }
+
+  if (!state.currentVideoId || !state.transcript || state.transcript.length === 0) {
+    showToast('Please load and transcribe a video first', 'warning');
+    return;
+  }
+
+  const btn = elements.saveTranscriptBtn;
+  const originalText = btn ? btn.textContent : '⭐ Save';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+  }
+
+  try {
+    await auth.saveTranscript({
+      videoId: state.currentVideoId,
+      title: state.videoInfo?.title || 'YouTube Video',
+      author: state.videoInfo?.author || 'Creator',
+      language: state.activeLanguage || 'en',
+      segmentCount: state.transcript.length,
+      segments: state.transcript.slice(0, 10), // save first few lines preview
+    });
+    showToast('⭐ Transcript saved to your account!', 'success');
+    if (btn) btn.textContent = '✓ Saved!';
+    setTimeout(() => {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    }, 2500);
+  } catch (err) {
+    showToast(`Failed to save: ${err.message}`, 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
+async function openSavedTranscriptsModal() {
+  if (!auth.isLoggedIn()) {
+    openAuthModal('login');
+    return;
+  }
+
+  if (elements.savedTranscriptsModal) {
+    elements.savedTranscriptsModal.classList.add('active');
+  }
+
+  if (elements.savedLoadingState) elements.savedLoadingState.style.display = 'block';
+  if (elements.savedEmptyState) elements.savedEmptyState.style.display = 'none';
+  if (elements.savedTranscriptsContainer) elements.savedTranscriptsContainer.innerHTML = '';
+
+  try {
+    const items = await auth.getSavedTranscripts();
+    if (elements.savedLoadingState) elements.savedLoadingState.style.display = 'none';
+
+    if (!items || items.length === 0) {
+      if (elements.savedEmptyState) elements.savedEmptyState.style.display = 'block';
+      return;
+    }
+
+    renderSavedTranscriptsList(items);
+  } catch (err) {
+    if (elements.savedLoadingState) elements.savedLoadingState.style.display = 'none';
+    showToast(`Error loading saved transcripts: ${err.message}`, 'error');
+  }
+}
+
+function renderSavedTranscriptsList(items) {
+  const container = elements.savedTranscriptsContainer;
+  if (!container) return;
+  container.innerHTML = '';
+
+  items.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'saved-item-card';
+
+    const formattedDate = item.savedAt ? new Date(item.savedAt).toLocaleDateString() : '';
+    const thumbUrl = item.thumbnail || `https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg`;
+
+    card.innerHTML = `
+      <div class="saved-item-main">
+        <img src="${thumbUrl}" class="saved-item-thumb" alt="thumbnail" loading="lazy" />
+        <div class="saved-item-details">
+          <div class="saved-item-title" title="${item.title || ''}">${item.title || 'YouTube Video'}</div>
+          <div class="saved-item-meta">
+            <span>👤 ${item.author || 'Creator'}</span>
+            <span>🌐 ${item.language?.toUpperCase() || 'EN'}</span>
+            <span>📊 ${item.segmentCount || 0} lines</span>
+            <span>📅 ${formattedDate}</span>
+          </div>
+        </div>
+      </div>
+      <div class="saved-item-actions">
+        <button class="btn btn-primary btn-sm btn-load-saved" data-video-id="${item.videoId}">
+          ▶ Load
+        </button>
+        <button class="btn-delete-saved" data-video-id="${item.videoId}" title="Remove from saved">
+          🗑️
+        </button>
+      </div>
+    `;
+
+    // Load button listener
+    const loadBtn = card.querySelector('.btn-load-saved');
+    if (loadBtn) {
+      loadBtn.addEventListener('click', () => {
+        if (elements.savedTranscriptsModal) elements.savedTranscriptsModal.classList.remove('active');
+        if (elements.urlInput) {
+          elements.urlInput.value = `https://www.youtube.com/watch?v=${item.videoId}`;
+          handleFetchVideo();
+        }
+      });
+    }
+
+    // Delete button listener
+    const delBtn = card.querySelector('.btn-delete-saved');
+    if (delBtn) {
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (confirm(`Remove "${item.title}" from your saved transcripts?`)) {
+          try {
+            await auth.deleteSavedTranscript(item.videoId);
+            showToast('Removed from saved items', 'info');
+            card.remove();
+            const remaining = container.querySelectorAll('.saved-item-card');
+            if (remaining.length === 0 && elements.savedEmptyState) {
+              elements.savedEmptyState.style.display = 'block';
+            }
+          } catch (err) {
+            showToast(`Could not delete: ${err.message}`, 'error');
+          }
+        }
+      });
+    }
+
+    container.appendChild(card);
+  });
 }
