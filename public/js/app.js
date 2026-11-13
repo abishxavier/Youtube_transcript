@@ -583,7 +583,12 @@ async function handleFetchVideo() {
       );
     } else if (err.message && (err.message.includes('sign-in verification') || err.message.includes('bot verification') || err.message.includes('Sign in to confirm') || err.message.includes('cookies file') || err.message.includes('YOUTUBE_COOKIES_PATH'))) {
       showStatusAlert(
-        'YouTube is blocking server access for this video. Try a video that has captions enabled, or add a Gemini API key in Settings for AI-powered transcription.',
+        'YouTube requires verification for this video. Please try a video that has subtitles enabled, or add a personal API key in Settings.',
+        'warning'
+      );
+    } else if (err.message && (err.message.includes('Captions are not available and audio processing could not be completed') || err.message.includes('Could not transcribe audio'))) {
+      showStatusAlert(
+        'This video does not have closed captions, and audio transcription could not be completed on the server. Please try a video with subtitles or add your Gemini API key in Settings.',
         'warning'
       );
     } else {

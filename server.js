@@ -3,6 +3,8 @@ import cors from 'cors';
 import { YoutubeTranscript } from 'youtube-transcript';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dns from 'node:dns';
+dns.setDefaultResultOrder('ipv4first');
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import ytdl from '@distube/ytdl-core';
 import youtubedl from 'youtube-dl-exec';
@@ -206,78 +208,53 @@ async function fetchVideoInfo(videoId) {
 
 /**
  * High-Reliability InnerTube API caption extractor.
- * Tries multiple client contexts in order of reliability for datacenter/server IPs:
- *   1. TV_EMBEDDED  — designed for server-to-server use, rarely triggers bot checks
- *   2. IOS          — mobile client, usually bypasses verification
- *   3. ANDROID      — fallback, may require sign-in on some videos
+ * Queries YouTube's mobile player endpoints (Android & iOS) to retrieve authentic caption tracks.
+ * Bypasses HTML scraping bot checks and datacenter IP blocks.
  */
 async function fetchInnerTubeCaptionTracks(videoId) {
-  // Client configurations ordered by datacenter-friendliness
   const clients = [
     {
-      name: 'TV_EMBEDDED',
-      userAgent: 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1',
-      apiKey: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
-      context: {
-        client: {
-          clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
-          clientVersion: '2.0',
-          hl: 'en',
-          gl: 'US',
+      name: 'ANDROID',
+      userAgent: 'com.google.android.youtube/21.03.36 (Linux; U; Android 14)',
+      body: {
+        context: {
+          client: {
+            clientName: 'ANDROID',
+            clientVersion: '21.03.36',
+            hl: 'en',
+            gl: 'US',
+          },
         },
-        thirdParty: {
-          embedUrl: 'https://www.youtube.com/',
-        },
+        videoId,
       },
     },
     {
       name: 'IOS',
-      userAgent: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)',
-      apiKey: 'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc',
-      context: {
-        client: {
-          clientName: 'IOS',
-          clientVersion: '19.45.4',
-          deviceModel: 'iPhone16,2',
-          hl: 'en',
-          gl: 'US',
+      userAgent: 'com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)',
+      body: {
+        context: {
+          client: {
+            clientName: 'IOS',
+            clientVersion: '20.11.6',
+            deviceModel: 'iPhone10,4',
+            hl: 'en',
+            gl: 'US',
+          },
         },
-      },
-    },
-    {
-      name: 'ANDROID',
-      userAgent: 'com.google.android.youtube/19.44.33 (Linux; U; Android 14)',
-      apiKey: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
-      context: {
-        client: {
-          clientName: 'ANDROID',
-          clientVersion: '19.44.33',
-          androidSdkVersion: 34,
-          hl: 'en',
-          gl: 'US',
-        },
+        videoId,
       },
     },
   ];
 
   for (const clientCfg of clients) {
     try {
-      const url = `https://www.youtube.com/youtubei/v1/player?key=${clientCfg.apiKey}&prettyPrint=false`;
-      const resp = await fetchYouTube(url, {
+      const resp = await fetchYouTube('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': clientCfg.userAgent,
-          'X-YouTube-Client-Name': '1',
-          'X-YouTube-Client-Version': clientCfg.context.client.clientVersion,
-          'Origin': 'https://www.youtube.com',
-          'Referer': 'https://www.youtube.com/',
         },
-        body: JSON.stringify({
-          context: clientCfg.context,
-          videoId,
-          params: 'CgIIAQ==', // request captions
-        }),
+        body: JSON.stringify(clientCfg.body),
         signal: AbortSignal.timeout(8000),
       });
 
@@ -288,7 +265,7 @@ async function fetchInnerTubeCaptionTracks(videoId) {
 
       const data = await resp.json();
       const playability = data?.playabilityStatus;
-      if (playability && (playability.status === 'ERROR' || playability.status === 'UNPLAYABLE')) {
+      if (playability && (playability.status === 'ERROR' || playability.status === 'LOGIN_REQUIRED' || playability.status === 'UNPLAYABLE')) {
         const reason = playability.reason || 'This video is unavailable';
         const lower = reason.toLowerCase();
         if (
@@ -306,20 +283,15 @@ async function fetchInnerTubeCaptionTracks(videoId) {
           unavailErr.reason = reason;
           throw unavailErr;
         }
-      }
-      // LOGIN_REQUIRED from one client doesn't mean unavailable — try next client
-      if (playability?.status === 'LOGIN_REQUIRED') {
-        console.warn(`[InnerTube/${clientCfg.name}] LOGIN_REQUIRED, trying next client...`);
+        console.warn(`[InnerTube/${clientCfg.name}] Status ${playability.status} (${reason}). Trying next client...`);
         continue;
       }
 
       const captionTracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
       if (Array.isArray(captionTracks) && captionTracks.length > 0) {
-        console.log(`[InnerTube/${clientCfg.name}] Found ${captionTracks.length} caption track(s).`);
+        console.log(`[InnerTube/${clientCfg.name}] Found ${captionTracks.length} caption track(s) for ${videoId}.`);
         return captionTracks;
       }
-      // No captions from this client — try next (captions may appear on another client)
-      console.warn(`[InnerTube/${clientCfg.name}] No caption tracks returned.`);
     } catch (err) {
       if (err.isUnavailable) throw err;
       console.warn(`[InnerTube/${clientCfg.name}] Error for ${videoId}:`, err.message);
@@ -513,20 +485,17 @@ function parseJson3Events(events) {
 /**
  * Extract subtitle tracks using yt-dlp metadata.
  * Zero media download (skipDownload: true). Fast and memory-safe (~1-2 seconds).
- * Uses tv_embedded → android → web client order to avoid bot verification challenges.
  */
 async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
   try {
     console.log(`[yt-dlp Subtitles] Extracting captions metadata for ${videoId}...`);
-    // tv_embedded is the most reliable client for server/datacenter IPs — no bot checks.
-    // Fall back to android then web if tv_embedded has no captions for this video.
     const info = await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
       jsRuntimes: 'node',
       dumpSingleJson: true,
       skipDownload: true,
       noPlaylist: true,
       noCacheDir: true,
-      extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+      extractorArgs: 'youtube:player_client=android,web',
       noCheckCertificates: true,
       ...getYtDlpCookiesOptions(),
     });
@@ -590,7 +559,7 @@ async function fetchCaptionsWithYtDlp(videoId, preferredLang = null) {
           skipDownload: true,
           noPlaylist: true,
           output: outBase + '.%(ext)s',
-          extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+          extractorArgs: 'youtube:player_client=android,web',
           noCheckCertificates: true,
           ...getYtDlpCookiesOptions(),
         });
@@ -781,7 +750,7 @@ Example format: ["Translated line 1", "Translated line 2"]
 Lines to translate:
 ${inputLines}`;
 
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${activeKey}`;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${activeKey}`;
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -834,7 +803,7 @@ async function transcribeWithGemini(videoId, apiKey) {
       output: outBase + '.%(ext)s',
       noPlaylist: true,
       noCacheDir: true,
-      extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+      extractorArgs: 'youtube:player_client=android,web',
       noCheckCertificates: true,
       ...getYtDlpCookiesOptions(),
       noPart: true,
@@ -1151,7 +1120,7 @@ async function transcribeAudioWithWhisper(videoId, customApiKey, hintLanguage = 
         output: outBase + '.%(ext)s',
         noPlaylist: true,
         noCacheDir: true,
-        extractorArgs: 'youtube:player_client=tv_embedded,android,web',
+        extractorArgs: 'youtube:player_client=android,web',
         noCheckCertificates: true,
         ...getYtDlpCookiesOptions(),
         noPart: true,
