@@ -5,7 +5,16 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { ProxyAgent, Agent, setGlobalDispatcher, fetch as undiciFetch } from 'undici';
+
+// Force undici to use IPv4 only and prevent 10s IPv6 connection timeouts on cloud hosts (Render)
+const globalIpv4Dispatcher = new Agent({
+  connect: {
+    family: 4,
+  },
+  pipelining: 0,
+});
+setGlobalDispatcher(globalIpv4Dispatcher);
 import ytdl from '@distube/ytdl-core';
 import youtubedl from 'youtube-dl-exec';
 import OpenAI, { toFile } from 'openai';
@@ -608,7 +617,7 @@ async function fetchTimedText(baseUrl) {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)'
       },
-      signal: AbortSignal.timeout(9000),
+      signal: AbortSignal.timeout(4000),
     });
 
     if (!res.ok) return null;
@@ -1932,18 +1941,6 @@ app.get('/api/transcript', async (req, res) => {
 
       if (targetTrack && targetTrack.baseUrl) {
         transcript = await fetchTimedText(targetTrack.baseUrl);
-      }
-
-      // If primary track timedtext failed, try any other available track
-      if (!transcript || transcript.length === 0) {
-        for (const trk of captionTracks) {
-          if (trk.baseUrl && trk !== targetTrack) {
-            transcript = await fetchTimedText(trk.baseUrl);
-            if (transcript && transcript.length > 0) {
-              break;
-            }
-          }
-        }
       }
 
       // CRITICAL: If server-side timedtext fetching failed (Render/cloud datacenter IP blocked by YouTube CDN),
